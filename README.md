@@ -1,0 +1,173 @@
+# VLM Screenshot Server
+
+Dockerized LAN/local screenshot analysis service for Seraph, Framekeeper output folders, or any app that wants to send screenshots to a private vision-language model.
+
+The service does not take screenshots. It only accepts image bytes and forwards them to an OpenAI-compatible VLM endpoint such as vLLM, SGLang, llama.cpp server, LM Studio, or an Ollama-compatible proxy.
+
+## Target Setup
+
+- Seraph runs on your Mac/Linux workstation.
+- The GPU model server runs on another machine with an RTX 3090 Ti 24 GB.
+- This repo runs a small HTTP API near Seraph or near the GPU host and forwards screenshots to the configured VLM backend.
+
+```mermaid
+flowchart LR
+  A["Screenshot folder"] --> B["Seraph"]
+  B --> C["VLM Screenshot Server"]
+  C --> D["GPU host: vLLM/SGLang/llama.cpp"]
+```
+
+## Quick Start
+
+Create `.env`:
+
+```bash
+cp .env.example .env
+```
+
+Edit:
+
+```env
+VLM_BASE_URL=http://GPU_SERVER_IP:8000/v1
+VLM_MODEL=google/gemma-4-12b-it-qat-q4
+VLM_API_KEY=
+```
+
+Run:
+
+```bash
+docker compose up --build
+```
+
+Health check:
+
+```bash
+curl http://localhost:8088/health
+```
+
+Analyze a screenshot:
+
+```bash
+curl -F "file=@/path/to/screenshot.png" \
+  http://localhost:8088/v1/analyze-file
+```
+
+## GPU Backend Examples
+
+### vLLM
+
+```bash
+vllm serve MODEL_ID \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --dtype float16 \
+  --max-model-len 8192 \
+  --gpu-memory-utilization 0.90
+```
+
+### llama.cpp Server
+
+```bash
+llama-server \
+  -m /models/model.gguf \
+  --host 0.0.0.0 \
+  --port 8000
+```
+
+Set:
+
+```env
+VLM_BASE_URL=http://GPU_SERVER_IP:8000/v1
+```
+
+## Model Shortlist For RTX 3090 Ti 24 GB
+
+This list is oriented toward screenshot analysis: OCR, UI understanding, layout, code/editor text, terminal output, browser pages, dashboards, and concise JSON extraction.
+
+| Rank | Model | Fit posture | Why use it | Notes |
+| --- | --- | --- | --- | --- |
+| 1 | Gemma 4 12B QAT/Q4 | Expected sweet spot | Strong Google multimodal model family, QAT/Q4 options, likely good quality/speed balance on 24 GB | Start here for Gemma-first benchmarking. |
+| 2 | MiniCPM-V 4.5 AWQ/GPTQ/GGUF | Strong practical fit | Excellent small VLM option with OCR/document focus and quantized releases | Best non-Gemma first comparison. |
+| 3 | Qwen2.5-VL-32B-Instruct-AWQ | Tight but high quality | Strong OCR, UI/chart/document reasoning; official AWQ quantization | Try with lower context/resolution/concurrency. |
+| 4 | GLM-4.1V-9B-Thinking | Practical fit | Good reasoning-style VLM around screenshot interpretation | May be slower/more verbose than needed. |
+| 5 | InternVL3-14B-AWQ | Practical/tight fit | Strong open VLM family with quantized options | Good benchmark candidate if Qwen32 is too heavy. |
+
+## Current Benchmark Notes
+
+Use these as research anchors, not marketing gospel. For Seraph, benchmark on your own screenshot corpus because UI/OCR quality is workload-specific.
+
+- Google lists Gemma 4 as multimodal, with E2B, E4B, 12B, 26B, and 31B variants, and positions the family for consumer GPU use.
+- Google’s Gemma 4 QAT release notes describe quantization-aware trained checkpoints, Q4_0 artifacts, and runtime support across vLLM, SGLang, llama.cpp, Ollama, and LM Studio.
+- MiniCPM-V 4.5 is a strong small-model baseline for OCR/document-style work and has quantized variants.
+- Qwen2.5-VL-32B-AWQ is the quality-stress test for a 24 GB card: likely better on hard screenshots, but more memory-sensitive.
+
+Sources:
+
+- [Gemma model page](https://deepmind.google/models/gemma/)
+- [Gemma 4 QAT announcement](https://blog.google/innovation-and-ai/technology/developers-tools/quantization-aware-training-gemma-4/)
+- [MiniCPM-V 4.5 model card](https://huggingface.co/openbmb/MiniCPM-V-4_5)
+- [Qwen2.5-VL-32B-Instruct-AWQ](https://huggingface.co/Qwen/Qwen2.5-VL-32B-Instruct-AWQ)
+- [GLM-4.1V-9B-Thinking](https://huggingface.co/zai-org/GLM-4.1V-9B-Thinking)
+- [InternVL3-14B-AWQ](https://huggingface.co/OpenGVLab/InternVL3-14B-AWQ)
+
+## Seraph Integration Shape
+
+Seraph should call this service as a remote image analyzer:
+
+```env
+SERAPH_SCREEN_ANALYSIS_PROVIDER=local-vlm
+SERAPH_LOCAL_VLM_BASE_URL=http://VLM_SERVER_IP:8088
+SERAPH_LOCAL_VLM_MODEL=google/gemma-4-12b-it-qat-q4
+```
+
+That Seraph provider still needs to be added if it is not already present. This repo intentionally keeps the screenshot producer separate from analysis: screenshots are just files or uploaded image bytes.
+
+## API
+
+### `POST /v1/analyze-file`
+
+Multipart upload:
+
+```bash
+curl -F "file=@screen.png" http://localhost:8088/v1/analyze-file
+```
+
+### `POST /v1/analyze`
+
+JSON body:
+
+```json
+{
+  "image_base64": "iVBORw0KGgo...",
+  "media_type": "image/png",
+  "app_hint": "VS Code"
+}
+```
+
+Response:
+
+```json
+{
+  "provider": "openai-compatible-vlm",
+  "model": "google/gemma-4-12b-it-qat-q4",
+  "duration_ms": 1234,
+  "analysis": {
+    "activity": "coding",
+    "app_guess": "VS Code",
+    "project": "seraph",
+    "summary": "Editing a screenshot analysis provider.",
+    "visible_text": ["redacted or short snippets"],
+    "sensitive": false,
+    "confidence": 0.86
+  },
+  "raw_text": "{...}"
+}
+```
+
+## Privacy
+
+- This service does not persist images.
+- Raw screenshots are forwarded to the configured VLM backend.
+- Put the VLM backend on a private LAN/VPN.
+- Keep `REDACT_VISIBLE_TEXT=true` unless you intentionally want raw snippets returned.
+- Do not expose this service or the VLM backend directly to the public internet.
