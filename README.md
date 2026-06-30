@@ -94,11 +94,13 @@ This list is oriented toward screenshot analysis: OCR, UI understanding, layout,
 
 | Rank | Model | Fit posture | Why use it | Notes |
 | --- | --- | --- | --- | --- |
-| 1 | Gemma 4 12B, preferably QAT/Q4 when available in your runtime | Expected sweet spot | Strong Google multimodal model family, QAT/Q4 options, likely good quality/speed balance on 24 GB | Start here for Gemma-first benchmarking. Use the exact current model ID from Google/Hugging Face/Kaggle. |
-| 2 | MiniCPM-V 4.5 AWQ/GPTQ/GGUF | Strong practical fit | Excellent small VLM option with OCR/document focus and quantized releases | Best non-Gemma first comparison. |
-| 3 | Qwen2.5-VL-32B-Instruct-AWQ | Tight but high quality | Strong OCR, UI/chart/document reasoning; official AWQ quantization | Try with lower context/resolution/concurrency. |
-| 4 | GLM-4.1V-9B-Thinking | Practical fit | Good reasoning-style VLM around screenshot interpretation | May be slower/more verbose than needed. |
-| 5 | InternVL3-14B-AWQ | Practical/tight fit | Strong open VLM family with quantized options | Good benchmark candidate if Qwen32 is too heavy. |
+| 1 | Gemma 4 26B-A4B Dynamic 4-bit / GGUF via Unsloth | Strong 24 GB candidate | Best Gemma-first target if the quantized runtime fits and quality is stable | Unsloth lists 26B-A4B GGUF 4-bit around 16 GB total memory and Dynamic 4-bit around 19.78 GB. |
+| 2 | Gemma 4 12B, preferably QAT/Q4 when available in your runtime | Expected sweet spot | Strong Google multimodal model family, QAT/Q4 options, likely good quality/speed balance on 24 GB | Start here if 26B-A4B is too slow or unavailable. Use the exact current model ID from Google/Hugging Face/Kaggle. |
+| 3 | MiniCPM-V 4.5 AWQ/GPTQ/GGUF | Strong practical fit | Excellent small VLM option with OCR/document focus and quantized releases | Best non-Gemma first comparison. |
+| 4 | Qwen2.5-VL-32B-Instruct-AWQ | Tight but high quality | Strong OCR, UI/chart/document reasoning; official AWQ quantization | Try with lower context/resolution/concurrency. |
+| 5 | GLM-4.1V-9B-Thinking | Practical fit | Good reasoning-style VLM around screenshot interpretation | May be slower/more verbose than needed. |
+| 6 | InternVL3-14B-AWQ | Practical/tight fit | Strong open VLM family with quantized options | Good benchmark candidate if Qwen32 is too heavy. |
+| Watch | Qwen3 3.6B / "Qwen 3.6" | Verify before using | Could be useful if a vision-capable checkpoint exists, but plain Qwen3 text models do not replace a VLM | Do not use for screenshot analysis unless the model card explicitly supports image inputs. |
 
 ## Current Benchmark Notes
 
@@ -106,13 +108,16 @@ Use these as research anchors, not marketing gospel. For Seraph, benchmark on yo
 
 - Google lists Gemma 4 as multimodal, with E2B/E4B efficiency models and 12B/26B/31B advanced reasoning models, and positions the family for cloud servers, laptops, phones, and personal computers.
 - Google’s Gemma 4 QAT release notes describe quantization-aware trained checkpoints, Q4_0 artifacts, and runtime support across vLLM, SGLang, llama.cpp, Ollama, and LM Studio.
+- Unsloth’s Gemma 4 page is important for 24 GB cards because it lists practical 4-bit/Dynamic 4-bit memory footprints, including Gemma 4 26B-A4B around the high-teens GB range.
 - MiniCPM-V 4.5 is a strong small-model baseline for OCR/document-style work and has quantized variants.
 - Qwen2.5-VL-32B-AWQ is the quality-stress test for a 24 GB card: likely better on hard screenshots, but more memory-sensitive.
+- Qwen3/Qwen 3.6 should stay on the watchlist until the exact candidate is confirmed as a vision-language model. Text-only Qwen3 checkpoints are not suitable for screenshot analysis.
 
 Sources checked June 30, 2026:
 
 - [Gemma model page](https://deepmind.google/models/gemma/)
 - [Gemma 4 QAT announcement](https://blog.google/innovation-and-ai/technology/developers-tools/quantization-aware-training-gemma-4/)
+- [Unsloth Gemma 4 models](https://unsloth.ai/docs/models/gemma-4)
 - [MiniCPM-V 4.5 model card](https://huggingface.co/openbmb/MiniCPM-V-4_5)
 - [Qwen2.5-VL-32B-Instruct-AWQ](https://huggingface.co/Qwen/Qwen2.5-VL-32B-Instruct-AWQ)
 - [GLM-4.1V-9B-Thinking](https://huggingface.co/zai-org/GLM-4.1V-9B-Thinking)
