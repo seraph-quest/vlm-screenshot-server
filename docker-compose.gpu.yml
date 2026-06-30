@@ -1,0 +1,50 @@
+services:
+  gemma-vlm:
+    image: vllm/vllm-openai:latest
+    command:
+      - --model
+      - ${GPU_MODEL_ID:-google/gemma-4-12b-it}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --dtype
+      - auto
+      - --max-model-len
+      - "8192"
+      - --gpu-memory-utilization
+      - "0.90"
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  screenshot-vlm:
+    build: .
+    environment:
+      HOST: ${HOST:-0.0.0.0}
+      PORT: ${PORT:-8088}
+      VLM_BASE_URL: http://gemma-vlm:8000/v1
+      VLM_API_KEY: ${VLM_API_KEY:-}
+      VLM_MODEL: ${GPU_MODEL_ID:-google/gemma-4-12b-it}
+      VLM_TIMEOUT_SECONDS: ${VLM_TIMEOUT_SECONDS:-120}
+      VLM_MAX_TOKENS: ${VLM_MAX_TOKENS:-700}
+      VLM_TEMPERATURE: ${VLM_TEMPERATURE:-0}
+      REDACT_VISIBLE_TEXT: ${REDACT_VISIBLE_TEXT:-true}
+    ports:
+      - "8088:8088"
+    depends_on:
+      - gemma-vlm
+    restart: unless-stopped
+
+volumes:
+  hf-cache:

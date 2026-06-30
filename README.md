@@ -29,15 +29,23 @@ Edit:
 
 ```env
 VLM_BASE_URL=http://GPU_SERVER_IP:8000/v1
-VLM_MODEL=google/gemma-4-12b-it-qat-q4
+VLM_MODEL=google/gemma-4-12b-it
 VLM_API_KEY=
 ```
 
-Run:
+Run the API wrapper when the VLM backend is already running:
 
 ```bash
 docker compose up --build
 ```
+
+Or run both the API wrapper and a vLLM backend on the GPU host:
+
+```bash
+GPU_MODEL_ID=google/gemma-4-12b-it docker compose -f docker-compose.gpu.yml up --build
+```
+
+For gated model repos, set `HUGGING_FACE_HUB_TOKEN` in `.env` after accepting the model license.
 
 Health check:
 
@@ -57,10 +65,10 @@ curl -F "file=@/path/to/screenshot.png" \
 ### vLLM
 
 ```bash
-vllm serve MODEL_ID \
+vllm serve google/gemma-4-12b-it \
   --host 0.0.0.0 \
   --port 8000 \
-  --dtype float16 \
+  --dtype auto \
   --max-model-len 8192 \
   --gpu-memory-utilization 0.90
 ```
@@ -86,7 +94,7 @@ This list is oriented toward screenshot analysis: OCR, UI understanding, layout,
 
 | Rank | Model | Fit posture | Why use it | Notes |
 | --- | --- | --- | --- | --- |
-| 1 | Gemma 4 12B QAT/Q4 | Expected sweet spot | Strong Google multimodal model family, QAT/Q4 options, likely good quality/speed balance on 24 GB | Start here for Gemma-first benchmarking. |
+| 1 | Gemma 4 12B, preferably QAT/Q4 when available in your runtime | Expected sweet spot | Strong Google multimodal model family, QAT/Q4 options, likely good quality/speed balance on 24 GB | Start here for Gemma-first benchmarking. Use the exact current model ID from Google/Hugging Face/Kaggle. |
 | 2 | MiniCPM-V 4.5 AWQ/GPTQ/GGUF | Strong practical fit | Excellent small VLM option with OCR/document focus and quantized releases | Best non-Gemma first comparison. |
 | 3 | Qwen2.5-VL-32B-Instruct-AWQ | Tight but high quality | Strong OCR, UI/chart/document reasoning; official AWQ quantization | Try with lower context/resolution/concurrency. |
 | 4 | GLM-4.1V-9B-Thinking | Practical fit | Good reasoning-style VLM around screenshot interpretation | May be slower/more verbose than needed. |
@@ -96,12 +104,12 @@ This list is oriented toward screenshot analysis: OCR, UI understanding, layout,
 
 Use these as research anchors, not marketing gospel. For Seraph, benchmark on your own screenshot corpus because UI/OCR quality is workload-specific.
 
-- Google lists Gemma 4 as multimodal, with E2B, E4B, 12B, 26B, and 31B variants, and positions the family for consumer GPU use.
+- Google lists Gemma 4 as multimodal, with E2B/E4B efficiency models and 12B/26B/31B advanced reasoning models, and positions the family for cloud servers, laptops, phones, and personal computers.
 - Google’s Gemma 4 QAT release notes describe quantization-aware trained checkpoints, Q4_0 artifacts, and runtime support across vLLM, SGLang, llama.cpp, Ollama, and LM Studio.
 - MiniCPM-V 4.5 is a strong small-model baseline for OCR/document-style work and has quantized variants.
 - Qwen2.5-VL-32B-AWQ is the quality-stress test for a 24 GB card: likely better on hard screenshots, but more memory-sensitive.
 
-Sources:
+Sources checked June 30, 2026:
 
 - [Gemma model page](https://deepmind.google/models/gemma/)
 - [Gemma 4 QAT announcement](https://blog.google/innovation-and-ai/technology/developers-tools/quantization-aware-training-gemma-4/)
@@ -117,7 +125,7 @@ Seraph should call this service as a remote image analyzer:
 ```env
 SERAPH_SCREEN_ANALYSIS_PROVIDER=local-vlm
 SERAPH_LOCAL_VLM_BASE_URL=http://VLM_SERVER_IP:8088
-SERAPH_LOCAL_VLM_MODEL=google/gemma-4-12b-it-qat-q4
+SERAPH_LOCAL_VLM_MODEL=google/gemma-4-12b-it
 ```
 
 That Seraph provider still needs to be added if it is not already present. This repo intentionally keeps the screenshot producer separate from analysis: screenshots are just files or uploaded image bytes.
@@ -149,7 +157,7 @@ Response:
 ```json
 {
   "provider": "openai-compatible-vlm",
-  "model": "google/gemma-4-12b-it-qat-q4",
+  "model": "google/gemma-4-12b-it",
   "duration_ms": 1234,
   "analysis": {
     "activity": "coding",
