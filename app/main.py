@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import base64
+import asyncio
+import contextlib
+import heapq
+import itertools
 import json
 import re
 import time
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -18,6 +23,106 @@ app = FastAPI(
     version="0.1.0",
     description="Local/LAN screenshot analysis API backed by an OpenAI-compatible vision model.",
 )
+
+_PRIORITY_RANKS = {
+    "interactive": 0,
+    "high": 1,
+    "normal": 2,
+    "background": 3,
+    "low": 4,
+}
+_queue_counter = itertools.count()
+_work_queue: "PriorityWorkQueue" | None = None
+_workers: list[asyncio.Task[None]] = []
+
+
+@dataclass
+class QueuedWork:
+    label: str
+    priority: str
+    submitted_at: float
+    run: Callable[[], Awaitable[Any]]
+    future: asyncio.Future[Any]
+
+
+class PriorityWorkQueue:
+    def __init__(self, *, max_size: int, max_background_active: int) -> None:
+        self._max_size = max(max_size, 1)
+        self._max_background_active = max(max_background_active, 0)
+        self._active_background = 0
+        self._items: list[tuple[int, int, QueuedWork]] = []
+        self._condition = asyncio.Condition()
+
+    @property
+    def max_size(self) -> int:
+        return self._max_size
+
+    def qsize(self) -> int:
+        return len(self._items)
+
+    def active_background(self) -> int:
+        return self._active_background
+
+    async def put(self, item: tuple[int, int, QueuedWork]) -> None:
+        rank, _, queued = item
+        async with self._condition:
+            if len(self._items) >= self._max_size and not self._admit_by_evicting_lower_priority(rank):
+                await self._condition.wait_for(lambda: len(self._items) < self._max_size)
+            heapq.heappush(self._items, item)
+            self._condition.notify()
+
+    async def get(self) -> tuple[int, int, QueuedWork]:
+        async with self._condition:
+            await self._condition.wait_for(self._has_eligible_work)
+            item = self._pop_eligible_work()
+            if _is_background_priority(item[2].priority):
+                self._active_background += 1
+            self._condition.notify()
+            return item
+
+    async def task_done(self, queued: QueuedWork) -> None:
+        async with self._condition:
+            if _is_background_priority(queued.priority) and self._active_background > 0:
+                self._active_background -= 1
+            self._condition.notify_all()
+
+    def _admit_by_evicting_lower_priority(self, incoming_rank: int) -> bool:
+        if not self._items:
+            return True
+        worst_index, (worst_rank, _, worst_work) = max(enumerate(self._items), key=lambda entry: entry[1][0])
+        if incoming_rank >= worst_rank:
+            return False
+        self._items.pop(worst_index)
+        heapq.heapify(self._items)
+        if not worst_work.future.done():
+            worst_work.future.set_exception(
+                HTTPException(
+                    status_code=429,
+                    detail={
+                        "error": "vlm_queue_preempted",
+                        "priority": worst_work.priority,
+                    },
+                )
+            )
+        return True
+
+    def _has_eligible_work(self) -> bool:
+        return any(self._is_eligible(item[2]) for item in self._items)
+
+    def _pop_eligible_work(self) -> tuple[int, int, QueuedWork]:
+        for index, item in enumerate(self._items):
+            if self._is_eligible(item[2]):
+                self._items.pop(index)
+                heapq.heapify(self._items)
+                return item
+        raise RuntimeError("priority queue woke without eligible work")
+
+    def _is_eligible(self, queued: QueuedWork) -> bool:
+        if not _is_background_priority(queued.priority):
+            return True
+        if self._max_background_active <= 0:
+            return False
+        return self._active_background < self._max_background_active
 
 
 class AnalyzeImageUrlRequest(BaseModel):
@@ -36,12 +141,38 @@ class AnalyzeResponse(BaseModel):
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "backend": settings.vlm_base_url,
         "model": settings.vlm_model,
+        "queue": _queue_status(),
     }
+
+
+@app.on_event("startup")
+async def _start_queue_workers() -> None:
+    global _work_queue
+    if _workers:
+        return
+    _work_queue = PriorityWorkQueue(
+        max_size=settings.queue_max_size,
+        max_background_active=_effective_background_workers(),
+    )
+    for worker_id in range(_effective_queue_workers()):
+        _workers.append(asyncio.create_task(_queue_worker(worker_id), name=f"vlm-queue-worker-{worker_id}"))
+
+
+@app.on_event("shutdown")
+async def _stop_queue_workers() -> None:
+    global _work_queue
+    for worker in _workers:
+        worker.cancel()
+    for worker in _workers:
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker
+    _workers.clear()
+    _work_queue = None
 
 
 @app.get("/health/backend")
@@ -116,24 +247,17 @@ async def chat_completions(request: Request) -> dict[str, Any]:
     payload = await request.json()
     runtime_profile = _runtime_profile_from_request(payload, request)
     reasoning = _reasoning_from_request(payload, request)
+    priority = _priority_from_request(payload, request, default="interactive")
     payload.setdefault("model", settings.vlm_model)
     headers = {"Content-Type": "application/json"}
     if settings.vlm_api_key:
         headers["Authorization"] = f"Bearer {settings.vlm_api_key}"
 
-    try:
-        async with httpx.AsyncClient(timeout=settings.vlm_timeout_seconds, trust_env=settings.vlm_trust_env) as client:
-            response = await client.post(
-                _chat_completions_url(settings.vlm_base_url),
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:800]
-        raise HTTPException(status_code=502, detail=f"VLM backend HTTP {exc.response.status_code}: {detail}") from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"VLM backend unavailable: {exc}") from exc
+    response = await _submit_backend_work(
+        label="chat",
+        priority=priority,
+        run=lambda: _post_chat_completion(payload=payload, headers=headers),
+    )
     response_payload = response.json()
     if _should_sanitize_visible_reasoning(runtime_profile=runtime_profile, reasoning=reasoning):
         _sanitize_chat_completion_payload(response_payload)
@@ -194,19 +318,11 @@ async def _analyze_image(
     if settings.vlm_api_key:
         headers["Authorization"] = f"Bearer {settings.vlm_api_key}"
 
-    try:
-        async with httpx.AsyncClient(timeout=settings.vlm_timeout_seconds, trust_env=settings.vlm_trust_env) as client:
-            response = await client.post(
-                _chat_completions_url(settings.vlm_base_url),
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:800]
-        raise HTTPException(status_code=502, detail=f"VLM backend HTTP {exc.response.status_code}: {detail}") from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"VLM backend unavailable: {exc}") from exc
+    response = await _submit_backend_work(
+        label="analyze",
+        priority=priority or "background",
+        run=lambda: _post_chat_completion(payload=payload, headers=headers),
+    )
 
     raw_text = response.json()["choices"][0]["message"]["content"].strip()
     if _should_sanitize_visible_reasoning(runtime_profile=runtime_profile, reasoning=reasoning):
@@ -222,6 +338,139 @@ async def _analyze_image(
         analysis=parsed,
         raw_text=raw_text,
     )
+
+
+async def _post_chat_completion(*, payload: dict[str, Any], headers: dict[str, str]) -> httpx.Response:
+    try:
+        async with httpx.AsyncClient(timeout=settings.vlm_timeout_seconds, trust_env=settings.vlm_trust_env) as client:
+            response = await client.post(
+                _chat_completions_url(settings.vlm_base_url),
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            return response
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:800]
+        raise HTTPException(status_code=502, detail=f"VLM backend HTTP {exc.response.status_code}: {detail}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"VLM backend unavailable: {exc}") from exc
+
+
+async def _submit_backend_work(
+    *,
+    label: str,
+    priority: Optional[str],
+    run: Callable[[], Awaitable[Any]],
+) -> Any:
+    queue = _ensure_queue()
+    normalized_priority = _normalize_priority(priority)
+    future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+    queued = QueuedWork(
+        label=label,
+        priority=normalized_priority,
+        submitted_at=time.monotonic(),
+        run=run,
+        future=future,
+    )
+    item = (_priority_rank(normalized_priority), next(_queue_counter), queued)
+    try:
+        await asyncio.wait_for(queue.put(item), timeout=max(settings.queue_admit_timeout_seconds, 0.01))
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "vlm_queue_full",
+                "priority": normalized_priority,
+                "queue": _queue_status(),
+            },
+        ) from exc
+    try:
+        return await asyncio.wait_for(future, timeout=max(settings.queue_result_timeout_seconds, 1.0))
+    except asyncio.TimeoutError as exc:
+        if not future.done():
+            future.cancel()
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "error": "vlm_queue_result_timeout",
+                "priority": normalized_priority,
+                "queue": _queue_status(),
+            },
+        ) from exc
+
+
+async def _queue_worker(worker_id: int) -> None:
+    queue = _ensure_queue()
+    while True:
+        _, _, queued = await queue.get()
+        try:
+            if queued.future.cancelled():
+                continue
+            try:
+                result = await queued.run()
+            except Exception as exc:  # noqa: BLE001 - propagate provider errors to the caller future.
+                if not queued.future.done():
+                    queued.future.set_exception(exc)
+            else:
+                if not queued.future.done():
+                    queued.future.set_result(result)
+        finally:
+            await queue.task_done(queued)
+
+
+def _ensure_queue() -> PriorityWorkQueue:
+    global _work_queue
+    if _work_queue is None:
+        _work_queue = PriorityWorkQueue(
+            max_size=settings.queue_max_size,
+            max_background_active=_effective_background_workers(),
+        )
+    return _work_queue
+
+
+def _queue_status() -> dict[str, Any]:
+    queue = _ensure_queue()
+    return {
+        "queued": queue.qsize(),
+        "active_background": queue.active_background(),
+        "max_size": queue.max_size,
+        "workers": _effective_queue_workers(),
+        "background_workers": _effective_background_workers(),
+        "configured_workers": settings.queue_workers,
+        "configured_background_workers": settings.queue_background_workers,
+        "admit_timeout_seconds": settings.queue_admit_timeout_seconds,
+        "result_timeout_seconds": settings.queue_result_timeout_seconds,
+    }
+
+
+def _priority_from_request(payload: dict[str, Any], request: Request, *, default: str) -> str:
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    value = metadata.get("priority") or payload.get("priority") or request.headers.get("X-Seraph-Priority") or default
+    return _normalize_priority(str(value))
+
+
+def _normalize_priority(priority: Optional[str]) -> str:
+    normalized = (priority or "normal").strip().lower()
+    return normalized if normalized in _PRIORITY_RANKS else "normal"
+
+
+def _priority_rank(priority: str) -> int:
+    return _PRIORITY_RANKS.get(_normalize_priority(priority), _PRIORITY_RANKS["normal"])
+
+
+def _is_background_priority(priority: str) -> bool:
+    return _normalize_priority(priority) in {"background", "low"}
+
+
+def _effective_queue_workers() -> int:
+    return max(settings.queue_workers, 1)
+
+
+def _effective_background_workers() -> int:
+    return max(0, min(settings.queue_background_workers, _effective_queue_workers() - 1))
 
 
 def _default_prompt(app_hint: Optional[str]) -> str:

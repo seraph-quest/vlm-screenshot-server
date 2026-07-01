@@ -208,6 +208,20 @@ curl \
 
 For `runtime_profile=screenshot_fast` or `reasoning=off`, the wrapper normalizes Gemma channel markers such as `<|channel>thought` before returning/parsing the response. This proves that callers do not receive visible reasoning markers after gateway normalization; it does not prove the backend performed no internal reasoning.
 
+### Queue and Backpressure
+
+All backend model calls pass through a bounded priority queue before hitting the OpenAI-compatible GPU server. Default behavior favors interactive/chat traffic over background screenshot analysis:
+
+```env
+QUEUE_MAX_SIZE=8
+QUEUE_WORKERS=2
+QUEUE_BACKGROUND_WORKERS=1
+QUEUE_ADMIT_TIMEOUT_SECONDS=1
+QUEUE_RESULT_TIMEOUT_SECONDS=600
+```
+
+Priority order is `interactive`, `high`, `normal`, `background`, then `low`. By default, one worker is reserved away from background screenshot work, so a running screenshot does not consume all wrapper capacity. The effective background worker count is clamped below total workers; for example, `QUEUE_WORKERS=1` leaves no background slot because otherwise screenshot work could starve chat/report traffic. If the queue is full of lower-priority work, a higher-priority request can preempt queued lower-priority work instead of being rejected. This keeps Seraph chat/report requests from being starved by a large screenshot backlog. If no lower-priority item can be preempted before `QUEUE_ADMIT_TIMEOUT_SECONDS`, the wrapper returns HTTP 429 with queue status. If a queued request waits/runs longer than `QUEUE_RESULT_TIMEOUT_SECONDS`, it returns HTTP 504.
+
 ### `POST /v1/chat/completions`
 
 OpenAI-compatible chat forwarding is disabled by default. Enable it only for Seraph local LLM routing on localhost or a private network:

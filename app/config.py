@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     vlm_trust_env: bool = False  # keep LAN calls off ambient HTTP(S)_PROXY by default
     chat_proxy_enabled: bool = False
     chat_proxy_api_key: str = ""
+    queue_max_size: int = 8
+    queue_workers: int = 2
+    queue_background_workers: int = 1
+    queue_admit_timeout_seconds: float = 1.0
+    queue_result_timeout_seconds: float = 600.0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
