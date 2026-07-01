@@ -2,15 +2,16 @@ services:
   screenshot-vlm:
     build: .
     environment:
-      HOST: ${HOST:-0.0.0.0}
-      PORT: ${PORT:-8088}
-      VLM_BASE_URL: ${VLM_BASE_URL:-http://gpu-host.local:8000/v1}
+      HOST: 0.0.0.0
+      PORT: ${PORT:-8000}
+      VLM_BASE_URL: ${VLM_BASE_URL:-http://192.168.1.26:8000/v1}
       VLM_API_KEY: ${VLM_API_KEY:-}
-      VLM_MODEL: ${VLM_MODEL:-google/gemma-4-12b-it}
-      VLM_TIMEOUT_SECONDS: ${VLM_TIMEOUT_SECONDS:-120}
+      VLM_MODEL: ${VLM_MODEL:-unsloth/gemma-4-26B-A4B-it-qat-GGUF}
+      VLM_TIMEOUT_SECONDS: ${VLM_TIMEOUT_SECONDS:-180}
       VLM_MAX_TOKENS: ${VLM_MAX_TOKENS:-700}
       VLM_TEMPERATURE: ${VLM_TEMPERATURE:-0}
+      VLM_TRUST_ENV: ${VLM_TRUST_ENV:-false}
       REDACT_VISIBLE_TEXT: ${REDACT_VISIBLE_TEXT:-true}
     ports:
-      - "8088:8088"
+      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8000}:${PORT:-8000}"
     restart: unless-stopped
