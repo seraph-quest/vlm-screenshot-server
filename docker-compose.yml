@@ -12,6 +12,8 @@ services:
       VLM_TEMPERATURE: ${VLM_TEMPERATURE:-0}
       VLM_TRUST_ENV: ${VLM_TRUST_ENV:-false}
       REDACT_VISIBLE_TEXT: ${REDACT_VISIBLE_TEXT:-true}
+      CHAT_PROXY_ENABLED: ${CHAT_PROXY_ENABLED:-false}
+      CHAT_PROXY_API_KEY: ${CHAT_PROXY_API_KEY:-}
     ports:
       - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8000}:${PORT:-8000}"
     restart: unless-stopped

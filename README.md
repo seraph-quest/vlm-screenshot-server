@@ -193,6 +193,32 @@ Multipart upload:
 curl -F "file=@screen.png" http://127.0.0.1:8000/v1/analyze-file
 ```
 
+Seraph may also send profile-control form fields:
+
+```bash
+curl \
+  -F "file=@screen.png" \
+  -F "runtime_profile=screenshot_fast" \
+  -F "runtime_path=screenshot_image_analysis" \
+  -F "priority=background" \
+  -F "reasoning=off" \
+  -F 'profile_options={"chat_template_kwargs":{"enable_thinking":false},"reasoning":false,"reasoning_format":"none"}' \
+  http://127.0.0.1:8000/v1/analyze-file
+```
+
+For `runtime_profile=screenshot_fast` or `reasoning=off`, the wrapper normalizes Gemma channel markers such as `<|channel>thought` before returning/parsing the response. This proves that callers do not receive visible reasoning markers after gateway normalization; it does not prove the backend performed no internal reasoning.
+
+### `POST /v1/chat/completions`
+
+OpenAI-compatible chat forwarding is disabled by default. Enable it only for Seraph local LLM routing on localhost or a private network:
+
+```env
+CHAT_PROXY_ENABLED=true
+CHAT_PROXY_API_KEY=use-a-local-secret
+```
+
+Seraph must send the same value as `LOCAL_LLM_API_KEY`. The same screenshot-fast marker normalization is applied when request metadata or `X-Seraph-*` headers identify the request as `screenshot_fast` / `reasoning=off`.
+
 ### `POST /v1/analyze`
 
 JSON body:

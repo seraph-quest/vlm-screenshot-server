@@ -7,7 +7,7 @@ import time
 from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -82,8 +82,13 @@ async def analyze_base64(body: AnalyzeImageUrlRequest) -> AnalyzeResponse:
 @app.post("/v1/analyze-file", response_model=AnalyzeResponse)
 async def analyze_file(
     file: UploadFile = File(...),
-    app_hint: Optional[str] = None,
-    prompt: Optional[str] = None,
+    app_hint: Optional[str] = Form(default=None),
+    prompt: Optional[str] = Form(default=None),
+    runtime_profile: Optional[str] = Form(default=None),
+    runtime_path: Optional[str] = Form(default=None),
+    priority: Optional[str] = Form(default=None),
+    reasoning: Optional[str] = Form(default=None),
+    profile_options: Optional[str] = Form(default=None),
 ) -> AnalyzeResponse:
     image_bytes = await file.read()
     if not image_bytes:
@@ -94,7 +99,54 @@ async def analyze_file(
         media_type=media_type,
         app_hint=app_hint,
         prompt=prompt,
+        runtime_profile=runtime_profile,
+        runtime_path=runtime_path,
+        priority=priority,
+        reasoning=reasoning,
+        profile_options=profile_options,
     )
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request) -> dict[str, Any]:
+    """Forward OpenAI-compatible text/chat requests to the configured backend."""
+    if not settings.chat_proxy_enabled:
+        raise HTTPException(status_code=404, detail="chat proxy is disabled")
+    _require_chat_proxy_auth(request)
+    payload = await request.json()
+    runtime_profile = _runtime_profile_from_request(payload, request)
+    reasoning = _reasoning_from_request(payload, request)
+    payload.setdefault("model", settings.vlm_model)
+    headers = {"Content-Type": "application/json"}
+    if settings.vlm_api_key:
+        headers["Authorization"] = f"Bearer {settings.vlm_api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.vlm_timeout_seconds, trust_env=settings.vlm_trust_env) as client:
+            response = await client.post(
+                _chat_completions_url(settings.vlm_base_url),
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:800]
+        raise HTTPException(status_code=502, detail=f"VLM backend HTTP {exc.response.status_code}: {detail}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"VLM backend unavailable: {exc}") from exc
+    response_payload = response.json()
+    if _should_sanitize_visible_reasoning(runtime_profile=runtime_profile, reasoning=reasoning):
+        _sanitize_chat_completion_payload(response_payload)
+    return response_payload
+
+
+def _require_chat_proxy_auth(request: Request) -> None:
+    configured_key = settings.chat_proxy_api_key.strip()
+    if not configured_key:
+        raise HTTPException(status_code=403, detail="chat proxy auth is not configured")
+    expected = f"Bearer {configured_key}"
+    if request.headers.get("Authorization") != expected:
+        raise HTTPException(status_code=401, detail="chat proxy auth required")
 
 
 async def _analyze_image(
@@ -103,6 +155,11 @@ async def _analyze_image(
     media_type: str,
     app_hint: Optional[str],
     prompt: Optional[str],
+    runtime_profile: Optional[str] = None,
+    runtime_path: Optional[str] = None,
+    priority: Optional[str] = None,
+    reasoning: Optional[str] = None,
+    profile_options: Optional[str] = None,
 ) -> AnalyzeResponse:
     start = time.monotonic()
     image_url = f"data:{media_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
@@ -120,6 +177,19 @@ async def _analyze_image(
         "max_tokens": settings.vlm_max_tokens,
         "temperature": settings.vlm_temperature,
     }
+    profile_payload_options = _profile_options_dict(profile_options)
+    payload.update(profile_payload_options)
+    if runtime_profile or runtime_path or priority or reasoning:
+        metadata = dict(payload.get("metadata") or {})
+        if runtime_profile:
+            metadata["runtime_profile"] = runtime_profile
+        if runtime_path:
+            metadata["runtime_path"] = runtime_path
+        if priority:
+            metadata["priority"] = priority
+        if reasoning:
+            metadata["reasoning"] = reasoning
+        payload["metadata"] = metadata
     headers = {"Content-Type": "application/json"}
     if settings.vlm_api_key:
         headers["Authorization"] = f"Bearer {settings.vlm_api_key}"
@@ -139,6 +209,8 @@ async def _analyze_image(
         raise HTTPException(status_code=502, detail=f"VLM backend unavailable: {exc}") from exc
 
     raw_text = response.json()["choices"][0]["message"]["content"].strip()
+    if _should_sanitize_visible_reasoning(runtime_profile=runtime_profile, reasoning=reasoning):
+        raw_text = _strip_visible_reasoning(raw_text).strip()
     parsed = _parse_json_object(raw_text)
     if settings.redact_visible_text and isinstance(parsed.get("visible_text"), list):
         parsed["visible_text"] = [_redact_sensitive_text(str(item)) for item in parsed["visible_text"][:20]]
@@ -220,6 +292,82 @@ def _parse_json_object(raw_text: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=502, detail="VLM JSON output must be an object")
     return parsed
+
+
+def _profile_options_dict(raw_options: Optional[str]) -> dict[str, Any]:
+    if not raw_options:
+        return {}
+    try:
+        parsed = json.loads(raw_options)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _runtime_profile_from_request(payload: dict[str, Any], request: Request) -> str:
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return str(
+        metadata.get("runtime_profile")
+        or payload.get("runtime_profile")
+        or request.headers.get("X-Seraph-Runtime-Profile")
+        or ""
+    ).strip()
+
+
+def _reasoning_from_request(payload: dict[str, Any], request: Request) -> str:
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    value = (
+        metadata.get("reasoning")
+        if "reasoning" in metadata
+        else payload.get("reasoning", request.headers.get("X-Seraph-Reasoning", ""))
+    )
+    return str(value).strip().lower()
+
+
+def _should_sanitize_visible_reasoning(*, runtime_profile: Optional[str], reasoning: Optional[str]) -> bool:
+    normalized_profile = (runtime_profile or "").strip().lower().replace("-", "_")
+    normalized_reasoning = (reasoning or "").strip().lower()
+    return normalized_profile == "screenshot_fast" or normalized_reasoning in {"0", "false", "no", "off"}
+
+
+def _sanitize_chat_completion_payload(payload: dict[str, Any]) -> None:
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        return
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            message["content"] = _strip_visible_reasoning(content).strip()
+
+
+def _strip_visible_reasoning(raw_text: str) -> str:
+    text = raw_text.strip()
+    text = re.sub(r"(?is)<think>.*?</think>", "", text)
+    channel_match = re.search(r"(?is)<\|channel\>\s*final\s*<\|message\>(.*)", text)
+    if channel_match:
+        return channel_match.group(1).strip()
+    thought_match = re.search(r"(?is)<\|channel\>\s*thought\s*<\|message\>.*?(<\|channel\>\s*final\s*<\|message\>.*)", text)
+    if thought_match:
+        return _strip_visible_reasoning(thought_match.group(1))
+    mislabeled_content_match = re.fullmatch(r"(?is)<\|channel\>\s*thought\s*<channel\|>\s*(.*)", text)
+    if mislabeled_content_match:
+        return mislabeled_content_match.group(1).strip()
+    mislabeled_message_match = re.fullmatch(r"(?is)<\|channel\>\s*thought\s*<\|message\>\s*(.*)", text)
+    if mislabeled_message_match:
+        return mislabeled_message_match.group(1).strip()
+    text = re.sub(r"(?is)<\|channel\>\s*thought\s*<\|message\>.*?(?=<\|channel\>|$)", "", text)
+    text = re.sub(r"(?is)<\|channel\>\s*thought\s*<channel\|>", "", text)
+    text = re.sub(r"(?is)<\|start\|>assistant\s*<\|channel\>\s*final\s*<\|message\>", "", text)
+    return text.strip()
 
 
 def _redact_sensitive_text(value: str) -> str:

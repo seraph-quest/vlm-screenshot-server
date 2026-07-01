@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     vlm_temperature: float = 0
     redact_visible_text: bool = True
     vlm_trust_env: bool = False  # keep LAN calls off ambient HTTP(S)_PROXY by default
+    chat_proxy_enabled: bool = False
+    chat_proxy_api_key: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
