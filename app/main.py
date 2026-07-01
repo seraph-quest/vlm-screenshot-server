@@ -4,7 +4,7 @@ import base64
 import json
 import re
 import time
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -23,8 +23,8 @@ app = FastAPI(
 class AnalyzeImageUrlRequest(BaseModel):
     image_base64: str = Field(..., description="Base64-encoded PNG/JPEG image bytes.")
     media_type: str = "image/png"
-    app_hint: str | None = None
-    prompt: str | None = None
+    app_hint: Optional[str] = None
+    prompt: Optional[str] = None
 
 
 class AnalyzeResponse(BaseModel):
@@ -44,6 +44,30 @@ async def health() -> dict[str, str]:
     }
 
 
+@app.get("/health/backend")
+async def backend_health() -> dict[str, Any]:
+    """Check whether the configured OpenAI-compatible VLM backend is reachable."""
+    try:
+        async with httpx.AsyncClient(timeout=10, trust_env=settings.vlm_trust_env) as client:
+            response = await client.get(_backend_health_url(settings.vlm_base_url))
+            if response.status_code == 404:
+                response = await client.get(_models_url(settings.vlm_base_url))
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"VLM backend health HTTP {exc.response.status_code}: {exc.response.text[:800]}",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"VLM backend health unavailable: {exc}") from exc
+    return {
+        "status": "ok",
+        "backend": settings.vlm_base_url,
+        "model": settings.vlm_model,
+        "backend_status": response.status_code,
+    }
+
+
 @app.post("/v1/analyze", response_model=AnalyzeResponse)
 async def analyze_base64(body: AnalyzeImageUrlRequest) -> AnalyzeResponse:
     image_bytes = _decode_base64(body.image_base64)
@@ -58,8 +82,8 @@ async def analyze_base64(body: AnalyzeImageUrlRequest) -> AnalyzeResponse:
 @app.post("/v1/analyze-file", response_model=AnalyzeResponse)
 async def analyze_file(
     file: UploadFile = File(...),
-    app_hint: str | None = None,
-    prompt: str | None = None,
+    app_hint: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> AnalyzeResponse:
     image_bytes = await file.read()
     if not image_bytes:
@@ -77,8 +101,8 @@ async def _analyze_image(
     image_bytes: bytes,
     *,
     media_type: str,
-    app_hint: str | None,
-    prompt: str | None,
+    app_hint: Optional[str],
+    prompt: Optional[str],
 ) -> AnalyzeResponse:
     start = time.monotonic()
     image_url = f"data:{media_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
@@ -101,7 +125,7 @@ async def _analyze_image(
         headers["Authorization"] = f"Bearer {settings.vlm_api_key}"
 
     try:
-        async with httpx.AsyncClient(timeout=settings.vlm_timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=settings.vlm_timeout_seconds, trust_env=settings.vlm_trust_env) as client:
             response = await client.post(
                 _chat_completions_url(settings.vlm_base_url),
                 headers=headers,
@@ -128,7 +152,7 @@ async def _analyze_image(
     )
 
 
-def _default_prompt(app_hint: str | None) -> str:
+def _default_prompt(app_hint: Optional[str]) -> str:
     app_line = f"Current app hint: {app_hint}\n" if app_hint else ""
     return (
         "Analyze this desktop screenshot for productivity/activity reporting.\n"
@@ -152,6 +176,24 @@ def _chat_completions_url(base_url: str) -> str:
     if clean.endswith("/chat/completions"):
         return clean
     return f"{clean}/chat/completions"
+
+
+def _models_url(base_url: str) -> str:
+    clean = base_url.rstrip("/")
+    if clean.endswith("/chat/completions"):
+        return clean.rsplit("/chat/completions", 1)[0] + "/models"
+    if clean.endswith("/v1"):
+        return f"{clean}/models"
+    return f"{clean}/v1/models"
+
+
+def _backend_health_url(base_url: str) -> str:
+    clean = base_url.rstrip("/")
+    if clean.endswith("/v1"):
+        return clean[:-3] + "/health"
+    if clean.endswith("/chat/completions"):
+        return clean.rsplit("/v1/chat/completions", 1)[0] + "/health"
+    return f"{clean}/health"
 
 
 def _decode_base64(value: str) -> bytes:

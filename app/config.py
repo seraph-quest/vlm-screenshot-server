@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     vlm_max_tokens: int = 700
     vlm_temperature: float = 0
     redact_visible_text: bool = True
+    vlm_trust_env: bool = False  # keep LAN calls off ambient HTTP(S)_PROXY by default
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

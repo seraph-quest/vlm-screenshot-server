@@ -19,46 +19,93 @@ flowchart LR
 
 ## Quick Start
 
-Create `.env`:
+### Recommended Seraph Topology
+
+Run the GPU model server on the RTX 3090 Ti host and run this wrapper natively on the Mac where Seraph runs. This avoids Docker Desktop networking problems with private LAN GPU hosts.
+
+```mermaid
+flowchart LR
+  A["Seraph on Mac"] --> B["Wrapper on Mac: 127.0.0.1:8000"]
+  B --> C["GPU llama server: 192.168.1.26:8000/v1"]
+```
+
+On the GPU host, use the official Unsloth Gemma 4 QAT llama.cpp path. Build a CUDA llama.cpp, download the QAT GGUF and multimodal projector, then start the server:
+
+```bash
+git clone https://github.com/seraph-quest/vlm-screenshot-server.git
+cd vlm-screenshot-server
+./scripts/build-llama-cuda.sh
+./scripts/download-gemma4-qat.sh
+./scripts/run-gemma4-3090ti.sh
+```
+
+Equivalent explicit server command after the build/download steps:
+
+```bash
+$HOME/src/llama.cpp/llama-server \
+  --model $HOME/models/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf \
+  --mmproj $HOME/models/gemma-4-26B-A4B-it-qat-GGUF/mmproj-BF16.gguf \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --ctx-size 8192 \
+  --n-gpu-layers 999 \
+  --temp 1.0 \
+  --top-p 0.95 \
+  --top-k 64 \
+  --alias unsloth/gemma-4-26B-A4B-it-qat-GGUF \
+  --chat-template-kwargs '{"enable_thinking":false}'
+```
+
+This intentionally does not use `llama serve -hf ... --no-mmproj-offload`; that path made text generation fast but left screenshot vision requests around 75 seconds on the RTX 3090 Ti. The QAT path uses Unsloth's `UD-Q4_K_XL` model plus explicit `mmproj-BF16.gguf` with a CUDA-built `llama-server`.
+
+On the Mac running Seraph:
 
 ```bash
 cp .env.example .env
+./scripts/run-local-wrapper.sh
 ```
 
-Edit:
+Expected `.env` values for this topology:
 
 ```env
-VLM_BASE_URL=http://GPU_SERVER_IP:8000/v1
-VLM_MODEL=google/gemma-4-12b-it
-VLM_API_KEY=
+HOST=127.0.0.1
+PORT=8000
+VLM_BASE_URL=http://192.168.1.26:8000/v1
+VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
+VLM_TRUST_ENV=false
 ```
 
-Run the API wrapper when the VLM backend is already running:
+Health checks from the Mac:
 
 ```bash
-docker compose up --build
-```
-
-Or run both the API wrapper and a vLLM backend on the GPU host:
-
-```bash
-GPU_MODEL_ID=google/gemma-4-12b-it docker compose -f docker-compose.gpu.yml up --build
-```
-
-For gated model repos, set `HUGGING_FACE_HUB_TOKEN` in `.env` after accepting the model license.
-
-Health check:
-
-```bash
-curl http://localhost:8088/health
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/health/backend
 ```
 
 Analyze a screenshot:
 
 ```bash
 curl -F "file=@/path/to/screenshot.png" \
-  http://localhost:8088/v1/analyze-file
+  http://127.0.0.1:8000/v1/analyze-file
 ```
+
+Seraph should point at the local wrapper, not the GPU host directly:
+
+```env
+SERAPH_SCREEN_ANALYSIS_PROVIDER=local-vlm
+SERAPH_LOCAL_VLM_BASE_URL=http://127.0.0.1:8000
+SERAPH_LOCAL_VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
+```
+
+### Docker Wrapper
+
+Docker is still supported when the container can reach the GPU backend. It is not the recommended Mac-to-LAN default because Docker Desktop networking may not reach some private GPU host bindings.
+
+```bash
+docker compose up --build
+```
+
+For gated model repos, set `HUGGING_FACE_HUB_TOKEN` in `.env` after accepting the model license.
 
 ## GPU Backend Examples
 
@@ -75,14 +122,15 @@ vllm serve google/gemma-4-12b-it \
 
 ### llama.cpp Server
 
+For Gemma 4 QAT on RTX 3090 Ti, use the CUDA llama.cpp build and QAT runner from this repo:
+
 ```bash
-llama-server \
-  -m /models/model.gguf \
-  --host 0.0.0.0 \
-  --port 8000
+./scripts/build-llama-cuda.sh
+./scripts/download-gemma4-qat.sh
+./scripts/run-gemma4-3090ti.sh
 ```
 
-Set:
+Set the wrapper to call it:
 
 ```env
 VLM_BASE_URL=http://GPU_SERVER_IP:8000/v1
@@ -129,11 +177,11 @@ Seraph should call this service as a remote image analyzer:
 
 ```env
 SERAPH_SCREEN_ANALYSIS_PROVIDER=local-vlm
-SERAPH_LOCAL_VLM_BASE_URL=http://VLM_SERVER_IP:8088
-SERAPH_LOCAL_VLM_MODEL=google/gemma-4-12b-it
+SERAPH_LOCAL_VLM_BASE_URL=http://127.0.0.1:8000
+SERAPH_LOCAL_VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
 ```
 
-That Seraph provider still needs to be added if it is not already present. This repo intentionally keeps the screenshot producer separate from analysis: screenshots are just files or uploaded image bytes.
+This repo intentionally keeps the screenshot producer separate from analysis: screenshots are just files or uploaded image bytes.
 
 ## API
 
@@ -142,7 +190,7 @@ That Seraph provider still needs to be added if it is not already present. This 
 Multipart upload:
 
 ```bash
-curl -F "file=@screen.png" http://localhost:8088/v1/analyze-file
+curl -F "file=@screen.png" http://127.0.0.1:8000/v1/analyze-file
 ```
 
 ### `POST /v1/analyze`
