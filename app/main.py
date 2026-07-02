@@ -50,6 +50,7 @@ class PriorityWorkQueue:
         self._max_size = max(max_size, 1)
         self._max_background_active = max(max_background_active, 0)
         self._active_background = 0
+        self._active = 0
         self._items: list[tuple[int, int, QueuedWork]] = []
         self._condition = asyncio.Condition()
 
@@ -63,6 +64,9 @@ class PriorityWorkQueue:
     def active_background(self) -> int:
         return self._active_background
 
+    def active(self) -> int:
+        return self._active
+
     async def put(self, item: tuple[int, int, QueuedWork]) -> None:
         rank, _, queued = item
         async with self._condition:
@@ -75,6 +79,7 @@ class PriorityWorkQueue:
         async with self._condition:
             await self._condition.wait_for(self._has_eligible_work)
             item = self._pop_eligible_work()
+            self._active += 1
             if _is_background_priority(item[2].priority):
                 self._active_background += 1
             self._condition.notify()
@@ -82,6 +87,8 @@ class PriorityWorkQueue:
 
     async def task_done(self, queued: QueuedWork) -> None:
         async with self._condition:
+            if self._active > 0:
+                self._active -= 1
             if _is_background_priority(queued.priority) and self._active_background > 0:
                 self._active_background -= 1
             self._condition.notify_all()
@@ -433,6 +440,7 @@ def _queue_status() -> dict[str, Any]:
     queue = _ensure_queue()
     return {
         "queued": queue.qsize(),
+        "active": queue.active(),
         "active_background": queue.active_background(),
         "max_size": queue.max_size,
         "workers": _effective_queue_workers(),
@@ -470,7 +478,10 @@ def _effective_queue_workers() -> int:
 
 
 def _effective_background_workers() -> int:
-    return max(0, min(settings.queue_background_workers, _effective_queue_workers() - 1))
+    workers = _effective_queue_workers()
+    if workers <= 1:
+        return 1 if settings.queue_background_workers > 0 else 0
+    return max(0, min(settings.queue_background_workers, workers - 1))
 
 
 def _default_prompt(app_hint: Optional[str]) -> str:

@@ -47,7 +47,7 @@ $HOME/src/llama.cpp/llama-server \
   --mmproj $HOME/models/gemma-4-26B-A4B-it-qat-GGUF/mmproj-BF16.gguf \
   --host 0.0.0.0 \
   --port 8000 \
-  --ctx-size 8192 \
+  --ctx-size 32768 \
   --n-gpu-layers 999 \
   --temp 1.0 \
   --top-p 0.95 \

@@ -9,7 +9,7 @@ MMPROJ_FILE="${MMPROJ_FILE:-$MODEL_DIR/mmproj-BF16.gguf}"
 ALIAS="${ALIAS:-unsloth/gemma-4-26B-A4B-it-qat-GGUF}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
-CTX_SIZE="${CTX_SIZE:-8192}"
+CTX_SIZE="${CTX_SIZE:-32768}"
 N_GPU_LAYERS="${N_GPU_LAYERS:-999}"
 
 if [ ! -x "$LLAMA_SERVER_BIN" ]; then

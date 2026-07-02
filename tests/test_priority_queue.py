@@ -55,15 +55,20 @@ class PriorityWorkQueueTest(unittest.IsolatedAsyncioTestCase):
 
         _, _, first = await queue.get()
         self.assertEqual(first.label, "screen-1")
+        self.assertEqual(queue.active(), 1)
         self.assertEqual(queue.active_background(), 1)
 
         await queue.put((_priority_rank("interactive"), 3, _work("chat", "interactive")))
         _, _, second = await queue.get()
 
         self.assertEqual(second.label, "chat")
+        self.assertEqual(queue.active(), 2)
         self.assertEqual(queue.active_background(), 1)
         await queue.task_done(first)
+        self.assertEqual(queue.active(), 1)
         self.assertEqual(queue.active_background(), 0)
+        await queue.task_done(second)
+        self.assertEqual(queue.active(), 0)
 
     async def test_effective_background_workers_reserve_capacity(self) -> None:
         original_workers = settings.queue_workers
@@ -75,7 +80,7 @@ class PriorityWorkQueueTest(unittest.IsolatedAsyncioTestCase):
 
             settings.queue_workers = 1
             settings.queue_background_workers = 1
-            self.assertEqual(_effective_background_workers(), 0)
+            self.assertEqual(_effective_background_workers(), 1)
         finally:
             settings.queue_workers = original_workers
             settings.queue_background_workers = original_background_workers
