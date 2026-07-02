@@ -3,7 +3,14 @@ import unittest
 
 from fastapi import HTTPException
 
-from app.main import PriorityWorkQueue, QueuedWork, _effective_background_workers, _priority_rank, settings
+from app.main import (
+    PriorityWorkQueue,
+    QueuedWork,
+    _effective_background_workers,
+    _effective_queue_workers,
+    _priority_rank,
+    settings,
+)
 
 
 async def _noop() -> None:
@@ -84,6 +91,10 @@ class PriorityWorkQueueTest(unittest.IsolatedAsyncioTestCase):
         finally:
             settings.queue_workers = original_workers
             settings.queue_background_workers = original_background_workers
+
+    async def test_default_topology_is_single_gpu_serial(self) -> None:
+        self.assertEqual(settings.queue_workers, 1)
+        self.assertEqual(_effective_queue_workers(), 1)
 
 
 if __name__ == "__main__":

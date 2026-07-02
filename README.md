@@ -21,7 +21,7 @@ flowchart LR
 
 ### Recommended Seraph Topology
 
-Run the GPU model server on the RTX 3090 Ti host and run this wrapper natively on the Mac where Seraph runs. This avoids Docker Desktop networking problems with private LAN GPU hosts.
+Run the GPU model server on the RTX 3090 Ti host and run this wrapper with Docker Compose on the Mac where Seraph runs. The wrapper exposes `127.0.0.1:8000` to Seraph and forwards serial work to the LAN GPU backend.
 
 ```mermaid
 flowchart LR
@@ -62,7 +62,7 @@ On the Mac running Seraph:
 
 ```bash
 cp .env.example .env
-./scripts/run-local-wrapper.sh
+docker compose up -d --build
 ```
 
 Expected `.env` values for this topology:
@@ -97,12 +97,12 @@ SERAPH_LOCAL_VLM_BASE_URL=http://127.0.0.1:8000
 SERAPH_LOCAL_VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
 ```
 
-### Docker Wrapper
+### Native Wrapper Fallback
 
-Docker is still supported when the container can reach the GPU backend. It is not the recommended Mac-to-LAN default because Docker Desktop networking may not reach some private GPU host bindings.
+The native wrapper script is a fallback for debugging Docker Desktop networking or local Python issues. It is not the default Seraph topology.
 
 ```bash
-docker compose up --build
+./scripts/run-local-wrapper.sh
 ```
 
 For gated model repos, set `HUGGING_FACE_HUB_TOKEN` in `.env` after accepting the model license.

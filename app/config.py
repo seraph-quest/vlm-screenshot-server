@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     vlm_api_key: str = ""
     vlm_model: str = "google/gemma-4-12b-it-qat-q4"
     vlm_timeout_seconds: int = 120
+    vlm_analyze_attempts: int = 2
     vlm_max_tokens: int = 700
     vlm_temperature: float = 0
     redact_visible_text: bool = True
@@ -15,7 +16,7 @@ class Settings(BaseSettings):
     chat_proxy_enabled: bool = False
     chat_proxy_api_key: str = ""
     queue_max_size: int = 8
-    queue_workers: int = 2
+    queue_workers: int = 1
     queue_background_workers: int = 1
     queue_admit_timeout_seconds: float = 1.0
     queue_result_timeout_seconds: float = 600.0

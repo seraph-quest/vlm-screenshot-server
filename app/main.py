@@ -337,16 +337,29 @@ async def _analyze_image(
     if settings.vlm_api_key:
         headers["Authorization"] = f"Bearer {settings.vlm_api_key}"
 
-    response = await _submit_backend_work(
-        label="analyze",
-        priority=priority or "background",
-        run=lambda: _post_chat_completion(payload=payload, headers=headers),
-    )
-
-    raw_text = response.json()["choices"][0]["message"]["content"].strip()
-    if _should_sanitize_visible_reasoning(runtime_profile=runtime_profile, reasoning=reasoning):
-        raw_text = _strip_visible_reasoning(raw_text).strip()
-    parsed = _parse_json_object(raw_text)
+    raw_text = ""
+    parsed: dict[str, Any] | None = None
+    attempts = max(settings.vlm_analyze_attempts, 1)
+    for attempt in range(1, attempts + 1):
+        try:
+            response = await _submit_backend_work(
+                label="analyze",
+                priority=priority or "background",
+                run=lambda: _post_chat_completion(payload=payload, headers=headers),
+            )
+            raw_text = response.json()["choices"][0]["message"]["content"].strip()
+            if _should_sanitize_visible_reasoning(runtime_profile=runtime_profile, reasoning=reasoning):
+                raw_text = _strip_visible_reasoning(raw_text).strip()
+            parsed = _parse_json_object(raw_text)
+            if _should_emit_seraph_screenshot_schema(runtime_profile=runtime_profile, runtime_path=runtime_path):
+                parsed = _coerce_seraph_screenshot_schema(parsed)
+            break
+        except HTTPException as exc:
+            if exc.status_code not in {502, 503, 504} or attempt >= attempts:
+                raise
+            await asyncio.sleep(min(0.25 * attempt, 1.0))
+    if parsed is None:
+        raise HTTPException(status_code=502, detail="VLM analysis did not return JSON")
     if settings.redact_visible_text and isinstance(parsed.get("visible_text"), list):
         parsed["visible_text"] = [_redact_sensitive_text(str(item)) for item in parsed["visible_text"][:20]]
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -657,6 +670,99 @@ def _profile_options_dict(raw_options: Optional[str]) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _should_emit_seraph_screenshot_schema(*, runtime_profile: Optional[str], runtime_path: Optional[str]) -> bool:
+    return (runtime_profile or "").strip().lower() == "screenshot_fast" or (
+        runtime_path or ""
+    ).strip().lower() == "screenshot_image_analysis"
+
+
+def _coerce_seraph_screenshot_schema(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("schema_version") == "seraph.screenshot_analysis.v1":
+        normalized = dict(payload)
+        for key in (
+            "detailed_observations",
+            "applications",
+            "visible_artifacts",
+            "key_visible_text",
+            "privacy_notes",
+            "report_tags",
+        ):
+            normalized[key] = _coerce_string_list(normalized.get(key))
+        goal_alignment = normalized.get("goal_alignment")
+        if isinstance(goal_alignment, dict):
+            normalized["goal_alignment"] = {
+                **goal_alignment,
+                "goal_refs": _coerce_string_list(goal_alignment.get("goal_refs")),
+                "evidence": _coerce_string_list(goal_alignment.get("evidence")),
+            }
+        return normalized
+    activity = str(payload.get("activity_type") or payload.get("activity") or "unknown").strip().lower()
+    if activity not in {
+        "coding",
+        "reviewing",
+        "researching",
+        "writing",
+        "communication",
+        "browsing",
+        "planning",
+        "system_admin",
+        "idle",
+        "unknown",
+    }:
+        activity = "unknown"
+    app_guess = payload.get("applications") or payload.get("app_guess")
+    if isinstance(app_guess, list):
+        applications = [str(item).strip() for item in app_guess if str(item).strip()]
+    elif isinstance(app_guess, str) and app_guess.strip():
+        applications = [part.strip() for part in re.split(r"\s*(?:,| and )\s*", app_guess) if part.strip()]
+    else:
+        applications = []
+    visible_text = payload.get("key_visible_text") or payload.get("visible_text") or []
+    if isinstance(visible_text, str):
+        key_visible_text = [visible_text]
+    elif isinstance(visible_text, list):
+        key_visible_text = [str(item) for item in visible_text]
+    else:
+        key_visible_text = []
+    sensitive = bool(payload.get("sensitive_content_seen") or payload.get("sensitive"))
+    return {
+        "schema_version": "seraph.screenshot_analysis.v1",
+        "prompt_version": "seraph.screenshot_analysis.prompt.v1",
+        "summary": str(payload.get("summary") or "Screenshot activity is unclear."),
+        "detailed_observations": payload.get("detailed_observations")
+        if isinstance(payload.get("detailed_observations"), list)
+        else [],
+        "activity_type": activity,
+        "project": payload.get("project") if isinstance(payload.get("project"), str) else None,
+        "applications": applications,
+        "visible_artifacts": payload.get("visible_artifacts") if isinstance(payload.get("visible_artifacts"), list) else [],
+        "key_visible_text": key_visible_text,
+        "user_intent": str(payload.get("user_intent") or "unknown"),
+        "goal_alignment": payload.get("goal_alignment")
+        if isinstance(payload.get("goal_alignment"), dict)
+        else {
+            "status": "unknown",
+            "goal_refs": [],
+            "evidence": [],
+            "needle_movement": "unknown",
+        },
+        "confidence": payload.get("confidence", 0.0),
+        "sensitive_content_seen": sensitive,
+        "privacy_notes": payload.get("privacy_notes")
+        if isinstance(payload.get("privacy_notes"), list)
+        else ["VLM wrapper coerced simple screenshot JSON into Seraph's current schema."],
+        "report_tags": payload.get("report_tags") if isinstance(payload.get("report_tags"), list) else ["screenshot", activity],
+    }
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str) and value.strip():
+        return [value]
+    return []
 
 
 def _runtime_profile_from_request(payload: dict[str, Any], request: Request) -> str:
