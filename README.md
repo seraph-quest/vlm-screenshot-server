@@ -233,6 +233,15 @@ CHAT_PROXY_API_KEY=use-a-local-secret
 
 Seraph must send the same value as `LOCAL_LLM_API_KEY`. The same screenshot-fast marker normalization is applied when request metadata or `X-Seraph-*` headers identify the request as `screenshot_fast` / `reasoning=off`.
 
+Authenticated OpenAI-compatible streaming is supported with `stream: true`. The wrapper returns `text/event-stream` chunks from the backend directly to the caller and keeps the request inside the priority queue worker until the stream finishes or the caller disconnects, so a single-worker GPU deployment remains serial while still streaming tokens to Seraph:
+
+```bash
+curl -N http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $CHAT_PROXY_API_KEY" \
+  -d '{"model":"unsloth/gemma-4-26B-A4B-it-qat-GGUF","stream":true,"messages":[{"role":"user","content":"Hello"}],"max_tokens":64}'
+```
+
 ### `POST /v1/analyze`
 
 JSON body:

@@ -8,11 +8,13 @@ import itertools
 import json
 import re
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Union
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -245,8 +247,8 @@ async def analyze_file(
     )
 
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: Request) -> dict[str, Any]:
+@app.post("/v1/chat/completions", response_model=None)
+async def chat_completions(request: Request) -> Union[dict[str, Any], StreamingResponse]:
     """Forward OpenAI-compatible text/chat requests to the configured backend."""
     if not settings.chat_proxy_enabled:
         raise HTTPException(status_code=404, detail="chat proxy is disabled")
@@ -259,6 +261,16 @@ async def chat_completions(request: Request) -> dict[str, Any]:
     headers = {"Content-Type": "application/json"}
     if settings.vlm_api_key:
         headers["Authorization"] = f"Bearer {settings.vlm_api_key}"
+
+    if _is_streaming_chat_request(payload):
+        return StreamingResponse(
+            _stream_queued_chat_completion(payload=payload, headers=headers, priority=priority),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     response = await _submit_backend_work(
         label="chat",
@@ -364,6 +376,85 @@ async def _post_chat_completion(*, payload: dict[str, Any], headers: dict[str, s
         raise HTTPException(status_code=502, detail=f"VLM backend unavailable: {exc}") from exc
 
 
+async def _stream_queued_chat_completion(
+    *,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    priority: Optional[str],
+) -> AsyncIterator[bytes]:
+    queue = _ensure_queue()
+    normalized_priority = _normalize_priority(priority)
+    chunk_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future[None] = loop.create_future()
+
+    async def _run_stream() -> None:
+        try:
+            async with httpx.AsyncClient(timeout=settings.vlm_timeout_seconds, trust_env=settings.vlm_trust_env) as client:
+                async with client.stream(
+                    "POST",
+                    _chat_completions_url(settings.vlm_base_url),
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        detail = (await response.aread()).decode("utf-8", errors="replace")[:800]
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"VLM backend HTTP {exc.response.status_code}: {detail}",
+                        ) from exc
+                    async for chunk in response.aiter_bytes():
+                        if done.cancelled():
+                            break
+                        if chunk:
+                            await chunk_queue.put(chunk)
+        except httpx.HTTPError as exc:
+            if not done.done():
+                done.set_exception(HTTPException(status_code=502, detail=f"VLM backend unavailable: {exc}"))
+        except Exception as exc:  # noqa: BLE001 - propagate stream failures to the response generator.
+            if not done.done():
+                done.set_exception(exc)
+        else:
+            if not done.done():
+                done.set_result(None)
+        finally:
+            await chunk_queue.put(None)
+
+    queued = QueuedWork(
+        label="chat-stream",
+        priority=normalized_priority,
+        submitted_at=time.monotonic(),
+        run=_run_stream,
+        future=done,
+    )
+    item = (_priority_rank(normalized_priority), next(_queue_counter), queued)
+    try:
+        await asyncio.wait_for(queue.put(item), timeout=max(settings.queue_admit_timeout_seconds, 0.01))
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "vlm_queue_full",
+                "priority": normalized_priority,
+                "queue": _queue_status(),
+            },
+        ) from exc
+
+    try:
+        while True:
+            chunk = await chunk_queue.get()
+            if chunk is None:
+                break
+            yield chunk
+        await done
+    except asyncio.CancelledError:
+        if not done.done():
+            done.cancel()
+        raise
+
+
 async def _submit_backend_work(
     *,
     label: str,
@@ -467,6 +558,10 @@ def _normalize_priority(priority: Optional[str]) -> str:
 
 def _priority_rank(priority: str) -> int:
     return _PRIORITY_RANKS.get(_normalize_priority(priority), _PRIORITY_RANKS["normal"])
+
+
+def _is_streaming_chat_request(payload: dict[str, Any]) -> bool:
+    return payload.get("stream") is True
 
 
 def _is_background_priority(priority: str) -> bool:
