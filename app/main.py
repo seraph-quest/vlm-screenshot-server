@@ -45,6 +45,7 @@ class QueuedWork:
     submitted_at: float
     run: Callable[[], Awaitable[Any]]
     future: asyncio.Future[Any]
+    on_clear: Callable[[], None] | None = None
 
 
 class PriorityWorkQueue:
@@ -53,6 +54,7 @@ class PriorityWorkQueue:
         self._max_background_active = max(max_background_active, 0)
         self._active_background = 0
         self._active = 0
+        self._clear_generation = 0
         self._items: list[tuple[int, int, QueuedWork]] = []
         self._condition = asyncio.Condition()
 
@@ -69,11 +71,25 @@ class PriorityWorkQueue:
     def active(self) -> int:
         return self._active
 
+    def queued_labels(self) -> list[str]:
+        return [queued.label for _, _, queued in sorted(self._items)]
+
     async def put(self, item: tuple[int, int, QueuedWork]) -> None:
         rank, _, queued = item
         async with self._condition:
             if len(self._items) >= self._max_size and not self._admit_by_evicting_lower_priority(rank):
-                await self._condition.wait_for(lambda: len(self._items) < self._max_size)
+                clear_generation = self._clear_generation
+                await self._condition.wait_for(
+                    lambda: len(self._items) < self._max_size or self._clear_generation != clear_generation
+                )
+                if self._clear_generation != clear_generation:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "vlm_queue_cleared",
+                            "priority": queued.priority,
+                        },
+                    )
             heapq.heappush(self._items, item)
             self._condition.notify()
 
@@ -95,6 +111,30 @@ class PriorityWorkQueue:
                 self._active_background -= 1
             self._condition.notify_all()
 
+    async def clear_queued(self) -> int:
+        async with self._condition:
+            queued_items = list(self._items)
+            self._items.clear()
+            for _, _, queued in queued_items:
+                self._mark_cleared(queued)
+            self._clear_generation += 1
+            self._condition.notify_all()
+            return len(queued_items)
+
+    def _mark_cleared(self, queued: QueuedWork) -> None:
+        if not queued.future.done():
+            queued.future.set_exception(
+                HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "vlm_queue_cleared",
+                        "priority": queued.priority,
+                    },
+                )
+            )
+        if queued.on_clear is not None:
+            queued.on_clear()
+
     def _admit_by_evicting_lower_priority(self, incoming_rank: int) -> bool:
         if not self._items:
             return True
@@ -113,6 +153,8 @@ class PriorityWorkQueue:
                     },
                 )
             )
+        if worst_work.on_clear is not None:
+            worst_work.on_clear()
         return True
 
     def _has_eligible_work(self) -> bool:
@@ -162,6 +204,15 @@ async def health() -> dict[str, Any]:
 @app.get("/queue/status")
 async def queue_status() -> dict[str, Any]:
     return _queue_status()
+
+
+@app.post("/queue/clear")
+async def clear_queue() -> dict[str, Any]:
+    queue = _ensure_queue()
+    cleared = await queue.clear_queued()
+    status = _queue_status()
+    status["cleared"] = cleared
+    return status
 
 
 @app.on_event("startup")
@@ -446,6 +497,7 @@ async def _stream_queued_chat_completion(
         submitted_at=time.monotonic(),
         run=_run_stream,
         future=done,
+        on_clear=lambda: chunk_queue.put_nowait(None),
     )
     item = (_priority_rank(normalized_priority), next(_queue_counter), queued)
     try:
@@ -466,7 +518,10 @@ async def _stream_queued_chat_completion(
             if chunk is None:
                 break
             yield chunk
-        await done
+        try:
+            await done
+        except HTTPException as exc:
+            yield _stream_error_event(exc)
     except asyncio.CancelledError:
         if not done.done():
             done.cancel()
@@ -551,6 +606,7 @@ def _queue_status() -> dict[str, Any]:
         "queued": queue.qsize(),
         "active": queue.active(),
         "active_background": queue.active_background(),
+        "pending_labels": queue.queued_labels(),
         "max_size": queue.max_size,
         "workers": _effective_queue_workers(),
         "background_workers": _effective_background_workers(),
@@ -559,6 +615,16 @@ def _queue_status() -> dict[str, Any]:
         "admit_timeout_seconds": settings.queue_admit_timeout_seconds,
         "result_timeout_seconds": settings.queue_result_timeout_seconds,
     }
+
+
+def _stream_error_event(exc: HTTPException) -> bytes:
+    payload = {
+        "error": {
+            "status_code": exc.status_code,
+            "detail": exc.detail,
+        }
+    }
+    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n".encode("utf-8")
 
 
 def _priority_from_request(payload: dict[str, Any], request: Request, *, default: str) -> str:

@@ -7,26 +7,28 @@ The service does not take screenshots. It only accepts image bytes and forwards 
 ## Target Setup
 
 - Seraph runs on your Mac/Linux workstation.
-- The GPU model server runs on another machine with an RTX 3090 Ti 24 GB.
-- This repo runs a small HTTP API near Seraph or near the GPU host and forwards screenshots to the configured VLM backend.
+- This wrapper runs as a Dockerized HTTP API on the GPU host.
+- The GPU model server runs on the same GPU host behind the wrapper.
+- Seraph communicates with the wrapper through HTTP API calls. SSH is for GPU host administration, deployment, and logs only; it is not the product runtime path.
 
 ```mermaid
 flowchart LR
   A["Screenshot folder"] --> B["Seraph"]
   B --> C["VLM Screenshot Server"]
-  C --> D["GPU host: vLLM/SGLang/llama.cpp"]
+  C --> D["GPU wrapper API: 192.168.1.26:8001"]
+  D --> E["GPU model server: 192.168.1.26:8000/v1"]
 ```
 
 ## Quick Start
 
 ### Recommended Seraph Topology
 
-Run the GPU model server on the RTX 3090 Ti host and run this wrapper with Docker Compose on the Mac where Seraph runs. The wrapper exposes `127.0.0.1:8000` to Seraph and forwards serial work to the LAN GPU backend.
+Run the GPU model server on the RTX 3090 Ti host and run this wrapper with Docker Compose on that same GPU host. The wrapper exposes `192.168.1.26:8001` to Seraph and forwards serial work to the local GPU backend at `http://127.0.0.1:8000/v1` from the GPU host.
 
 ```mermaid
 flowchart LR
-  A["Seraph on Mac"] --> B["Wrapper on Mac: 127.0.0.1:8000"]
-  B --> C["GPU llama server: 192.168.1.26:8000/v1"]
+  A["Seraph on Mac"] --> B["Wrapper API on GPU host: 192.168.1.26:8001"]
+  B --> C["GPU llama server on GPU host: 127.0.0.1:8000/v1"]
 ```
 
 On the GPU host, use the official Unsloth Gemma 4 QAT llama.cpp path. Build a CUDA llama.cpp, download the QAT GGUF and multimodal projector, then start the server:
@@ -58,7 +60,7 @@ $HOME/src/llama.cpp/llama-server \
 
 This intentionally does not use `llama serve -hf ... --no-mmproj-offload`; that path made text generation fast but left screenshot vision requests around 75 seconds on the RTX 3090 Ti. The QAT path uses Unsloth's `UD-Q4_K_XL` model plus explicit `mmproj-BF16.gguf` with a CUDA-built `llama-server`.
 
-On the Mac running Seraph:
+On the GPU host:
 
 ```bash
 cp .env.example .env
@@ -68,33 +70,35 @@ docker compose up -d --build
 Expected `.env` values for this topology:
 
 ```env
-HOST=127.0.0.1
-PORT=8000
-VLM_BASE_URL=http://192.168.1.26:8000/v1
+HOST=0.0.0.0
+PORT=8001
+HOST_BIND=0.0.0.0
+HOST_PORT=8001
+VLM_BASE_URL=http://127.0.0.1:8000/v1
 VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
 VLM_TRUST_ENV=false
 ```
 
-Health checks from the Mac:
+Health checks from the Mac or from Seraph:
 
 ```bash
-curl http://127.0.0.1:8000/health
-curl http://127.0.0.1:8000/health/backend
-curl http://127.0.0.1:8000/queue/status
+curl http://192.168.1.26:8001/health
+curl http://192.168.1.26:8001/health/backend
+curl http://192.168.1.26:8001/queue/status
 ```
 
 Analyze a screenshot:
 
 ```bash
 curl -F "file=@/path/to/screenshot.png" \
-  http://127.0.0.1:8000/v1/analyze-file
+  http://192.168.1.26:8001/v1/analyze-file
 ```
 
-Seraph should point at the local wrapper, not the GPU host directly:
+Seraph should point at the wrapper API, not the raw GPU model server:
 
 ```env
 SERAPH_SCREEN_ANALYSIS_PROVIDER=local-vlm
-SERAPH_LOCAL_VLM_BASE_URL=http://127.0.0.1:8000
+SERAPH_LOCAL_VLM_BASE_URL=http://192.168.1.26:8001
 SERAPH_LOCAL_VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
 ```
 
@@ -178,7 +182,7 @@ Seraph should call this service as a remote image analyzer:
 
 ```env
 SERAPH_SCREEN_ANALYSIS_PROVIDER=local-vlm
-SERAPH_LOCAL_VLM_BASE_URL=http://127.0.0.1:8000
+SERAPH_LOCAL_VLM_BASE_URL=http://192.168.1.26:8001
 SERAPH_LOCAL_VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
 ```
 
@@ -191,7 +195,7 @@ This repo intentionally keeps the screenshot producer separate from analysis: sc
 Multipart upload:
 
 ```bash
-curl -F "file=@screen.png" http://127.0.0.1:8000/v1/analyze-file
+curl -F "file=@screen.png" http://192.168.1.26:8001/v1/analyze-file
 ```
 
 Seraph may also send profile-control form fields:
@@ -204,7 +208,7 @@ curl \
   -F "priority=background" \
   -F "reasoning=off" \
   -F 'profile_options={"chat_template_kwargs":{"enable_thinking":false},"reasoning":false,"reasoning_format":"none"}' \
-  http://127.0.0.1:8000/v1/analyze-file
+  http://192.168.1.26:8001/v1/analyze-file
 ```
 
 For `runtime_profile=screenshot_fast` or `reasoning=off`, the wrapper normalizes Gemma channel markers such as `<|channel>thought` before returning/parsing the response. This proves that callers do not receive visible reasoning markers after gateway normalization; it does not prove the backend performed no internal reasoning.
@@ -215,7 +219,7 @@ All backend model calls pass through a bounded priority queue before hitting the
 
 ```env
 QUEUE_MAX_SIZE=8
-QUEUE_WORKERS=2
+QUEUE_WORKERS=1
 QUEUE_BACKGROUND_WORKERS=1
 QUEUE_ADMIT_TIMEOUT_SECONDS=1
 QUEUE_RESULT_TIMEOUT_SECONDS=600
@@ -228,10 +232,20 @@ Priority order is `interactive`, `high`, `normal`, `background`, then `low`. Wit
 Returns operator-safe queue telemetry without probing the model backend:
 
 ```bash
-curl http://127.0.0.1:8000/queue/status
+curl http://192.168.1.26:8001/queue/status
 ```
 
-The payload includes queued work, active work, active background work, max queue size, effective worker counts, configured worker counts, and queue timeout settings. Seraph uses this surface for backpressure and operator-visible receipts.
+The payload includes queued work, active work, active background work, pending queued labels, max queue size, effective worker counts, configured worker counts, and queue timeout settings. Seraph uses this surface for backpressure and operator-visible receipts.
+
+### `POST /queue/clear`
+
+Clears only queued work that has not started running:
+
+```bash
+curl -X POST http://192.168.1.26:8001/queue/clear
+```
+
+The running GPU job is not cancelled. Cleared queued non-streaming callers receive HTTP 409 with `vlm_queue_cleared`; queued streaming callers receive a terminal SSE error event with the same error code because streaming response headers may already be committed. The response includes the refreshed queue status plus `cleared`.
 
 ### `POST /v1/chat/completions`
 
@@ -247,7 +261,7 @@ Seraph must send the same value as `LOCAL_LLM_API_KEY`. The same screenshot-fast
 Authenticated OpenAI-compatible streaming is supported with `stream: true`. The wrapper returns `text/event-stream` chunks from the backend directly to the caller and keeps the request inside the priority queue worker until the stream finishes or the caller disconnects, so a single-worker GPU deployment remains serial while still streaming tokens to Seraph:
 
 ```bash
-curl -N http://127.0.0.1:8000/v1/chat/completions \
+curl -N http://192.168.1.26:8001/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $CHAT_PROXY_API_KEY" \
   -d '{"model":"unsloth/gemma-4-26B-A4B-it-qat-GGUF","stream":true,"messages":[{"role":"user","content":"Hello"}],"max_tokens":64}'
