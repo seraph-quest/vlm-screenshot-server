@@ -23,12 +23,12 @@ flowchart LR
 
 ### Recommended Seraph Topology
 
-Run the GPU model server on the RTX 3090 Ti host and run this wrapper with Docker Compose on that same GPU host. The wrapper uses Linux host networking, exposes `192.168.1.26:8001` to Seraph, and forwards serial work to the GPU host backend at `http://127.0.0.1:8000/v1`.
+Run the GPU model server on the RTX 3090 Ti host and run this wrapper with Docker Compose on that same GPU host. The wrapper publishes `192.168.1.26:8001` to Seraph and forwards serial work to the GPU model backend at `http://192.168.1.26:8000/v1`.
 
 ```mermaid
 flowchart LR
   A["Seraph on Mac"] --> B["Wrapper API on GPU host: 192.168.1.26:8001"]
-  B --> C["GPU llama server on GPU host: 127.0.0.1:8000/v1"]
+  B --> C["GPU llama server on GPU host: 192.168.1.26:8000/v1"]
 ```
 
 On the GPU host, use the official Unsloth Gemma 4 QAT llama.cpp path. Build a CUDA llama.cpp, download the QAT GGUF and multimodal projector, then start the server:
@@ -72,10 +72,12 @@ Expected `.env` values for this topology:
 ```env
 HOST=0.0.0.0
 PORT=8001
-VLM_BASE_URL=http://127.0.0.1:8000/v1
+HOST_BIND=0.0.0.0
+HOST_PORT=8001
+VLM_BASE_URL=http://192.168.1.26:8000/v1
 VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
 VLM_TRUST_ENV=false
-VLM_ALLOW_DOCKER_LOCALHOST=true
+VLM_ALLOW_DOCKER_LOCALHOST=false
 ```
 
 Health checks from the Mac or from Seraph:
@@ -86,7 +88,7 @@ curl http://192.168.1.26:8001/health/backend
 curl http://192.168.1.26:8001/queue/status
 ```
 
-On the Linux GPU host, `docker-compose.yml` uses `network_mode: host`, so the wrapper container shares the host network namespace. In this topology `http://127.0.0.1:8000/v1` is the GPU host's model server, not a separate container loopback.
+The wrapper container runs in Docker bridge mode and reaches the model server through the GPU host LAN address. Do not set the wrapper backend to `http://127.0.0.1:8000/v1` in this topology; inside bridge-mode Docker that points back at the wrapper container, not the GPU host.
 
 Analyze a screenshot:
 
@@ -139,10 +141,10 @@ For Gemma 4 QAT on RTX 3090 Ti, use the CUDA llama.cpp build and QAT runner from
 Set the wrapper to call it:
 
 ```env
-VLM_BASE_URL=http://127.0.0.1:8000/v1
+VLM_BASE_URL=http://192.168.1.26:8000/v1
 ```
 
-For this GPU-host Docker topology, host networking makes `127.0.0.1:8000` the running GPU model server on the host. If the wrapper is ever moved back to bridge networking, do not use `127.0.0.1` as the backend unless the model server is inside the same container.
+For this GPU-host Docker topology, the wrapper runs in bridge mode and reaches the GPU model server through the host LAN IP. Use localhost only for native/non-Docker wrapper runs or if the model server is inside the same container.
 
 ## Model Shortlist For RTX 3090 Ti 24 GB
 
