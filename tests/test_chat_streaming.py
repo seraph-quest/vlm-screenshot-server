@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from app import main
-from app.main import PriorityWorkQueue, _queue_worker, _stream_queued_chat_completion
+from app.main import PriorityWorkQueue, QueuedWork, _priority_rank, _queue_worker, _stream_queued_chat_completion
 
 
 class _FakeStreamResponse:
@@ -89,6 +89,67 @@ class ChatStreamingTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(remaining, chunks[1:])
         self.assertEqual(main._ensure_queue().active(), 0)
+
+
+class ChatStreamingQueueRejectionTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._original_queue = main._work_queue
+        main._work_queue = PriorityWorkQueue(max_size=1, max_background_active=1)
+
+    async def asyncTearDown(self) -> None:
+        main._work_queue = self._original_queue
+
+    async def test_streaming_chat_reports_queue_clear_without_hanging(self) -> None:
+        stream = _stream_queued_chat_completion(
+            payload={"model": "local", "stream": True, "messages": []},
+            headers={"Content-Type": "application/json"},
+            priority="normal",
+        )
+        first_chunk = asyncio.create_task(stream.__anext__())
+        await self._wait_for_queue_size(1)
+
+        cleared = await main._ensure_queue().clear_queued()
+
+        self.assertEqual(cleared, 1)
+        chunk = await asyncio.wait_for(first_chunk, timeout=0.1)
+        self.assertIn(b'"error":"vlm_queue_cleared"', chunk)
+        with self.assertRaises(StopAsyncIteration):
+            await stream.__anext__()
+
+    async def test_streaming_chat_reports_priority_preemption_without_hanging(self) -> None:
+        stream = _stream_queued_chat_completion(
+            payload={"model": "local", "stream": True, "messages": []},
+            headers={"Content-Type": "application/json"},
+            priority="background",
+        )
+        first_chunk = asyncio.create_task(stream.__anext__())
+        await self._wait_for_queue_size(1)
+
+        await main._ensure_queue().put(
+            (
+                _priority_rank("interactive"),
+                10,
+                QueuedWork(
+                    label="chat",
+                    priority="interactive",
+                    submitted_at=0.0,
+                    run=lambda: asyncio.sleep(0),
+                    future=asyncio.get_running_loop().create_future(),
+                ),
+            )
+        )
+
+        chunk = await asyncio.wait_for(first_chunk, timeout=0.1)
+        self.assertIn(b'"error":"vlm_queue_preempted"', chunk)
+        with self.assertRaises(StopAsyncIteration):
+            await stream.__anext__()
+
+    async def _wait_for_queue_size(self, expected: int) -> None:
+        for _ in range(20):
+            if main._ensure_queue().qsize() == expected:
+                return
+            await asyncio.sleep(0)
+        self.fail(f"queue size did not reach {expected}")
 
 
 if __name__ == "__main__":
