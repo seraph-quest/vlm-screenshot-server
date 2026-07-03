@@ -201,6 +201,31 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.get("/health/chat")
+async def chat_health(request: Request) -> dict[str, Any]:
+    enabled = bool(settings.chat_proxy_enabled)
+    configured_key = settings.chat_proxy_api_key.strip()
+    auth_configured = bool(configured_key)
+    auth_header = request.headers.get("authorization", "")
+    expected = f"Bearer {configured_key}" if configured_key else ""
+    auth_ok = bool(auth_configured and auth_header == expected)
+    if not enabled:
+        status = "disabled"
+    elif not auth_configured:
+        status = "auth_not_configured"
+    elif not auth_ok:
+        status = "auth_failed"
+    else:
+        status = "ok"
+    return {
+        "status": status,
+        "enabled": enabled,
+        "auth_configured": auth_configured,
+        "auth_ok": auth_ok,
+        "model": settings.vlm_model,
+    }
+
+
 @app.get("/queue/status")
 async def queue_status() -> dict[str, Any]:
     return _queue_status()

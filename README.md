@@ -86,6 +86,8 @@ Health checks from the Mac or from Seraph:
 curl http://192.168.1.26:8001/health
 curl http://192.168.1.26:8001/health/backend
 curl http://192.168.1.26:8001/queue/status
+curl http://192.168.1.26:8001/health/chat \
+  -H "Authorization: Bearer $CHAT_PROXY_API_KEY"
 ```
 
 The wrapper container runs in Docker bridge mode and reaches the model server through the GPU host LAN address. Do not set the wrapper backend to `http://127.0.0.1:8000/v1` in this topology; inside bridge-mode Docker that points back at the wrapper container, not the GPU host.
@@ -241,6 +243,17 @@ curl http://192.168.1.26:8001/queue/status
 ```
 
 The payload includes queued work, active work, active background work, pending queued labels, max queue size, effective worker counts, configured worker counts, and queue timeout settings. Seraph uses this surface for backpressure and operator-visible receipts.
+
+### `GET /health/chat`
+
+Returns chat-proxy readiness without running inference or adding GPU queue work:
+
+```bash
+curl http://192.168.1.26:8001/health/chat \
+  -H "Authorization: Bearer $CHAT_PROXY_API_KEY"
+```
+
+The payload includes `enabled`, `auth_configured`, `auth_ok`, `status`, and `model`, but never returns the configured API key. Seraph uses this endpoint to prove the direct API route can use the chat proxy before marking the local Gemma/VLM path reachable. A healthy response has `status: "ok"` and `auth_ok: true`; `disabled`, `auth_not_configured`, or `auth_failed` means screenshot analysis may still work but Seraph chat is not ready.
 
 ### `POST /queue/clear`
 
