@@ -80,6 +80,7 @@ Health checks from the Mac:
 ```bash
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/health/backend
+curl http://127.0.0.1:8000/queue/status
 ```
 
 Analyze a screenshot:
@@ -220,7 +221,17 @@ QUEUE_ADMIT_TIMEOUT_SECONDS=1
 QUEUE_RESULT_TIMEOUT_SECONDS=600
 ```
 
-Priority order is `interactive`, `high`, `normal`, `background`, then `low`. By default, one worker is reserved away from background screenshot work, so a running screenshot does not consume all wrapper capacity. The effective background worker count is clamped below total workers; for example, `QUEUE_WORKERS=1` leaves no background slot because otherwise screenshot work could starve chat/report traffic. If the queue is full of lower-priority work, a higher-priority request can preempt queued lower-priority work instead of being rejected. This keeps Seraph chat/report requests from being starved by a large screenshot backlog. If no lower-priority item can be preempted before `QUEUE_ADMIT_TIMEOUT_SECONDS`, the wrapper returns HTTP 429 with queue status. If a queued request waits/runs longer than `QUEUE_RESULT_TIMEOUT_SECONDS`, it returns HTTP 504.
+Priority order is `interactive`, `high`, `normal`, `background`, then `low`. With one GPU, set `QUEUE_WORKERS=1` so only one model call runs at a time. `QUEUE_BACKGROUND_WORKERS=1` lets background screenshot work use that single worker when no higher-priority work is ready; active work is not preempted, and the next dispatch chooses by priority. If the queue is full of lower-priority work, a higher-priority request can preempt queued lower-priority work instead of being rejected. This keeps Seraph chat/report requests from being starved by a large screenshot backlog. If no lower-priority item can be preempted before `QUEUE_ADMIT_TIMEOUT_SECONDS`, the wrapper returns HTTP 429 with queue status. If a queued request waits/runs longer than `QUEUE_RESULT_TIMEOUT_SECONDS`, it returns HTTP 504.
+
+### `GET /queue/status`
+
+Returns operator-safe queue telemetry without probing the model backend:
+
+```bash
+curl http://127.0.0.1:8000/queue/status
+```
+
+The payload includes queued work, active work, active background work, max queue size, effective worker counts, configured worker counts, and queue timeout settings. Seraph uses this surface for backpressure and operator-visible receipts.
 
 ### `POST /v1/chat/completions`
 

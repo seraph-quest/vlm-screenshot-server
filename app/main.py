@@ -159,6 +159,11 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.get("/queue/status")
+async def queue_status() -> dict[str, Any]:
+    return _queue_status()
+
+
 @app.on_event("startup")
 async def _start_queue_workers() -> None:
     global _work_queue

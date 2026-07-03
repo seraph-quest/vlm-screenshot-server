@@ -2,10 +2,12 @@ import asyncio
 import unittest
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from app.main import (
     PriorityWorkQueue,
     QueuedWork,
+    app,
     _effective_background_workers,
     _effective_queue_workers,
     _priority_rank,
@@ -119,6 +121,20 @@ class PriorityWorkQueueTest(unittest.IsolatedAsyncioTestCase):
     async def test_default_topology_is_single_gpu_serial(self) -> None:
         self.assertEqual(settings.queue_workers, 1)
         self.assertEqual(_effective_queue_workers(), 1)
+
+
+class QueueStatusEndpointTest(unittest.TestCase):
+    def test_queue_status_endpoint_exposes_operator_queue_telemetry(self) -> None:
+        with TestClient(app) as client:
+            response = client.get("/queue/status")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["queued"], 0)
+        self.assertEqual(payload["active"], 0)
+        self.assertEqual(payload["max_size"], settings.queue_max_size)
+        self.assertEqual(payload["workers"], _effective_queue_workers())
+        self.assertEqual(payload["configured_workers"], settings.queue_workers)
 
 
 if __name__ == "__main__":
