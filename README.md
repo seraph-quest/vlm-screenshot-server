@@ -23,12 +23,12 @@ flowchart LR
 
 ### Recommended Seraph Topology
 
-Run the GPU model server on the RTX 3090 Ti host and run this wrapper with Docker Compose on that same GPU host. The wrapper exposes `192.168.1.26:8001` to Seraph and forwards serial work to the local GPU backend at `http://127.0.0.1:8000/v1` from the GPU host.
+Run the GPU model server on the RTX 3090 Ti host and run this wrapper with Docker Compose on that same GPU host. The wrapper exposes `192.168.1.26:8001` to Seraph and forwards serial work to the GPU host backend at `http://host.docker.internal:8000/v1` from inside the container.
 
 ```mermaid
 flowchart LR
   A["Seraph on Mac"] --> B["Wrapper API on GPU host: 192.168.1.26:8001"]
-  B --> C["GPU llama server on GPU host: 127.0.0.1:8000/v1"]
+  B --> C["GPU llama server on GPU host: host.docker.internal:8000/v1"]
 ```
 
 On the GPU host, use the official Unsloth Gemma 4 QAT llama.cpp path. Build a CUDA llama.cpp, download the QAT GGUF and multimodal projector, then start the server:
@@ -74,7 +74,7 @@ HOST=0.0.0.0
 PORT=8001
 HOST_BIND=0.0.0.0
 HOST_PORT=8001
-VLM_BASE_URL=http://127.0.0.1:8000/v1
+VLM_BASE_URL=http://host.docker.internal:8000/v1
 VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
 VLM_TRUST_ENV=false
 ```
@@ -86,6 +86,8 @@ curl http://192.168.1.26:8001/health
 curl http://192.168.1.26:8001/health/backend
 curl http://192.168.1.26:8001/queue/status
 ```
+
+On Linux Docker, `docker-compose.yml` maps `host.docker.internal` to the host gateway so the wrapper container can reach the GPU host's model server. Do not set the wrapper backend to `http://127.0.0.1:8000/v1` unless the model server is running inside the same container; inside Docker that address points back to the wrapper container, not the GPU host.
 
 Analyze a screenshot:
 
@@ -138,8 +140,10 @@ For Gemma 4 QAT on RTX 3090 Ti, use the CUDA llama.cpp build and QAT runner from
 Set the wrapper to call it:
 
 ```env
-VLM_BASE_URL=http://GPU_SERVER_IP:8000/v1
+VLM_BASE_URL=http://host.docker.internal:8000/v1
 ```
+
+For Docker on the same GPU host, do not use `http://127.0.0.1:8000/v1` as the wrapper backend; that points to the wrapper container. Use `host.docker.internal` through the Compose `host-gateway` mapping. A direct GPU host IP backend is only appropriate when the wrapper runs on a different machine or outside Docker.
 
 ## Model Shortlist For RTX 3090 Ti 24 GB
 
