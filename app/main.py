@@ -22,7 +22,7 @@ from app.config import settings
 
 app = FastAPI(
     title="VLM Screenshot Server",
-    version="0.1.0",
+    version="0.2.0",
     description="Local/LAN screenshot analysis API backed by an OpenAI-compatible vision model.",
 )
 
