@@ -4,7 +4,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: ${PORT:-8001}
-      VLM_BASE_URL: ${VLM_BASE_URL:-http://127.0.0.1:8000/v1}
+      VLM_BASE_URL: ${VLM_BASE_URL:-http://host.docker.internal:8000/v1}
       VLM_API_KEY: ${VLM_API_KEY:-}
       VLM_MODEL: ${VLM_MODEL:-unsloth/gemma-4-26B-A4B-it-qat-GGUF}
       VLM_TIMEOUT_SECONDS: ${VLM_TIMEOUT_SECONDS:-180}
@@ -21,4 +21,6 @@ services:
       QUEUE_RESULT_TIMEOUT_SECONDS: ${QUEUE_RESULT_TIMEOUT_SECONDS:-600}
     ports:
       - "${HOST_BIND:-0.0.0.0}:${HOST_PORT:-8001}:${PORT:-8001}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
