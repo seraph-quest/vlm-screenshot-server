@@ -237,5 +237,78 @@ class QueueStatusEndpointTest(unittest.TestCase):
         self.assertEqual(payload["active"], 0)
 
 
+class ChatHealthEndpointTest(unittest.TestCase):
+    def test_chat_health_reports_disabled_proxy(self) -> None:
+        original_enabled = settings.chat_proxy_enabled
+        original_key = settings.chat_proxy_api_key
+        try:
+            settings.chat_proxy_enabled = False
+            settings.chat_proxy_api_key = ""
+            with TestClient(app) as client:
+                response = client.get("/health/chat")
+        finally:
+            settings.chat_proxy_enabled = original_enabled
+            settings.chat_proxy_api_key = original_key
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "disabled")
+        self.assertFalse(payload["enabled"])
+        self.assertFalse(payload["auth_configured"])
+        self.assertFalse(payload["auth_ok"])
+
+    def test_chat_health_requires_matching_authorization_header(self) -> None:
+        original_enabled = settings.chat_proxy_enabled
+        original_key = settings.chat_proxy_api_key
+        try:
+            settings.chat_proxy_enabled = True
+            settings.chat_proxy_api_key = "local-secret"
+            with TestClient(app) as client:
+                response = client.get("/health/chat")
+                authorized_response = client.get(
+                    "/health/chat",
+                    headers={"Authorization": "Bearer local-secret"},
+                )
+        finally:
+            settings.chat_proxy_enabled = original_enabled
+            settings.chat_proxy_api_key = original_key
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "auth_failed")
+        self.assertTrue(payload["enabled"])
+        self.assertTrue(payload["auth_configured"])
+        self.assertFalse(payload["auth_ok"])
+
+        self.assertEqual(authorized_response.status_code, 200)
+        authorized_payload = authorized_response.json()
+        self.assertEqual(authorized_payload["status"], "ok")
+        self.assertTrue(authorized_payload["enabled"])
+        self.assertTrue(authorized_payload["auth_configured"])
+        self.assertTrue(authorized_payload["auth_ok"])
+        self.assertEqual(authorized_payload["model"], settings.vlm_model)
+        self.assertNotIn("local-secret", str(authorized_payload))
+        self.assertNotIn("local-secret", str(payload))
+
+    def test_chat_health_reports_auth_not_configured(self) -> None:
+        original_enabled = settings.chat_proxy_enabled
+        original_key = settings.chat_proxy_api_key
+        try:
+            settings.chat_proxy_enabled = True
+            settings.chat_proxy_api_key = ""
+            with TestClient(app) as client:
+                response = client.get("/health/chat")
+        finally:
+            settings.chat_proxy_enabled = original_enabled
+            settings.chat_proxy_api_key = original_key
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "auth_not_configured")
+        self.assertTrue(payload["enabled"])
+        self.assertFalse(payload["auth_configured"])
+        self.assertFalse(payload["auth_ok"])
+
+
 if __name__ == "__main__":
     unittest.main()
