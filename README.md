@@ -140,8 +140,10 @@ For Gemma 4 QAT on RTX 3090 Ti, use the CUDA llama.cpp build and QAT runner from
 Set the wrapper to call it:
 
 ```env
-VLM_BASE_URL=http://GPU_SERVER_IP:8000/v1
+VLM_BASE_URL=http://host.docker.internal:8000/v1
 ```
+
+For Docker on the same GPU host, do not use `http://127.0.0.1:8000/v1` as the wrapper backend; that points to the wrapper container. Use `host.docker.internal` through the Compose `host-gateway` mapping. A direct GPU host IP backend is only appropriate when the wrapper runs on a different machine or outside Docker.
 
 ## Model Shortlist For RTX 3090 Ti 24 GB
 
