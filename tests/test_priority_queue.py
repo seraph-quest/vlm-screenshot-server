@@ -77,6 +77,30 @@ class PriorityWorkQueueTest(unittest.IsolatedAsyncioTestCase):
         await queue.task_done(second)
         self.assertEqual(queue.active(), 0)
 
+    async def test_single_gpu_next_dispatch_uses_highest_priority_after_active_finishes(self) -> None:
+        queue = PriorityWorkQueue(max_size=4, max_background_active=1)
+        await queue.put((_priority_rank("background"), 1, _work("screen-active", "background")))
+        _, _, active = await queue.get()
+        self.assertEqual(active.label, "screen-active")
+        self.assertEqual(queue.active(), 1)
+        self.assertEqual(queue.active_background(), 1)
+
+        await queue.put((_priority_rank("background"), 2, _work("screen-next", "background")))
+        await queue.put((_priority_rank("interactive"), 3, _work("chat-next", "interactive")))
+        self.assertEqual(queue.qsize(), 2)
+
+        await queue.task_done(active)
+        self.assertEqual(queue.active(), 0)
+        self.assertEqual(queue.active_background(), 0)
+
+        _, _, next_work = await queue.get()
+        self.assertEqual(next_work.label, "chat-next")
+        await queue.task_done(next_work)
+
+        _, _, remaining = await queue.get()
+        self.assertEqual(remaining.label, "screen-next")
+        await queue.task_done(remaining)
+
     async def test_effective_background_workers_reserve_capacity(self) -> None:
         original_workers = settings.queue_workers
         original_background_workers = settings.queue_background_workers
