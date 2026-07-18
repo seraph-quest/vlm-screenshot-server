@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     port: int = 8088
     vlm_base_url: str = "http://127.0.0.1:8000/v1"
     vlm_api_key: str = ""
-    vlm_model: str = "google/gemma-4-12b-it-qat-q4"
+    vlm_model: str = "unsloth/gemma-4-31B-it-qat-GGUF-schema-43cc1aeb"
     vlm_timeout_seconds: int = 120
     vlm_analyze_attempts: int = 2
     vlm_max_tokens: int = 700

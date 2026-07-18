@@ -13,7 +13,7 @@ fi
 export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-8000}"
 export VLM_BASE_URL="${VLM_BASE_URL:-http://192.168.1.26:8000/v1}"
-export VLM_MODEL="${VLM_MODEL:-unsloth/gemma-4-26B-A4B-it-qat-GGUF}"
+export VLM_MODEL="${VLM_MODEL:-unsloth/gemma-4-31B-it-qat-GGUF-schema-43cc1aeb}"
 export VLM_TIMEOUT_SECONDS="${VLM_TIMEOUT_SECONDS:-180}"
 export VLM_MAX_TOKENS="${VLM_MAX_TOKENS:-700}"
 export VLM_TEMPERATURE="${VLM_TEMPERATURE:-0}"

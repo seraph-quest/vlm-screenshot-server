@@ -1,0 +1,33 @@
+services:
+  gemma-vlm:
+    command:
+      - --model
+      - /models/${GPU_MODEL_FILE:-gemma-4-31B-it-qat-UD-Q4_K_XL.gguf}
+      - --mmproj
+      - /models/${GPU_MMPROJ_FILE:-mmproj-BF16.gguf}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --ctx-size
+      - ${GPU_MODEL_CTX_SIZE:-32768}
+      - --n-gpu-layers
+      - ${GPU_MODEL_LAYERS:-999}
+      - --temp
+      - "1.0"
+      - --top-p
+      - "0.95"
+      - --top-k
+      - "64"
+      - --alias
+      - ${GPU_MODEL_ALIAS:-unsloth/gemma-4-31B-it-qat-GGUF-schema-43cc1aeb}
+      - --chat-template-kwargs
+      - '{"enable_thinking":false}'
+      - --spec-type
+      - draft-mtp
+      - --spec-draft-model
+      - /models/${GPU_MTP_DRAFTER_FILE:-mtp-gemma-4-31B-it.gguf}
+      - --spec-draft-n-max
+      - "4"
+      - --flash-attn
+      - "on"

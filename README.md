@@ -31,22 +31,32 @@ flowchart LR
   B --> C["GPU llama server on GPU host: 192.168.1.26:8000/v1"]
 ```
 
-On the GPU host, use the official Unsloth Gemma 4 QAT llama.cpp path. Build a CUDA llama.cpp, download the QAT GGUF and multimodal projector, then start the server:
+On the GPU host, use the pinned Unsloth Gemma 4 31B QAT GGUF with the
+digest-pinned CUDA llama.cpp container. Authenticate with Hugging Face once,
+download and verify the exact revision, then start the backend and wrapper:
 
 ```bash
 git clone https://github.com/seraph-quest/vlm-screenshot-server.git
 cd vlm-screenshot-server
-./scripts/build-llama-cuda.sh
+hf auth login
 ./scripts/download-gemma4-qat.sh
-./scripts/run-gemma4-3090ti.sh
+docker compose -f docker-compose.gpu.yml up -d --build
 ```
 
-Equivalent explicit server command after the build/download steps:
+The 26B-A4B refresh remains available as a fallback with
+`CANDIDATE=26b ./scripts/download-gemma4-qat.sh` and matching `GPU_*` values.
+MTP is deliberately opt-in and uses the same base Compose file:
+
+```bash
+docker compose -f docker-compose.gpu.yml -f docker-compose.gpu-mtp.yml up -d --build
+```
+
+Equivalent explicit native server command after the build/download steps:
 
 ```bash
 $HOME/src/llama.cpp/llama-server \
-  --model $HOME/models/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf \
-  --mmproj $HOME/models/gemma-4-26B-A4B-it-qat-GGUF/mmproj-BF16.gguf \
+  --model $HOME/models/gemma4-schema/31b-43cc1aeb31adf47ec06a854507ce552cd9862e6f/gemma-4-31B-it-qat-UD-Q4_K_XL.gguf \
+  --mmproj $HOME/models/gemma4-schema/31b-43cc1aeb31adf47ec06a854507ce552cd9862e6f/mmproj-BF16.gguf \
   --host 0.0.0.0 \
   --port 8000 \
   --ctx-size 32768 \
@@ -54,7 +64,7 @@ $HOME/src/llama.cpp/llama-server \
   --temp 1.0 \
   --top-p 0.95 \
   --top-k 64 \
-  --alias unsloth/gemma-4-26B-A4B-it-qat-GGUF \
+  --alias unsloth/gemma-4-31B-it-qat-GGUF-schema-43cc1aeb \
   --chat-template-kwargs '{"enable_thinking":false}'
 ```
 
@@ -75,7 +85,7 @@ PORT=8001
 HOST_BIND=0.0.0.0
 HOST_PORT=8001
 VLM_BASE_URL=http://192.168.1.26:8000/v1
-VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
+VLM_MODEL=unsloth/gemma-4-31B-it-qat-GGUF-schema-43cc1aeb
 VLM_TRUST_ENV=false
 VLM_ALLOW_DOCKER_LOCALHOST=false
 ```
@@ -104,7 +114,7 @@ Seraph should point at the wrapper API, not the raw GPU model server:
 ```env
 SERAPH_SCREEN_ANALYSIS_PROVIDER=local-vlm
 SERAPH_LOCAL_VLM_BASE_URL=http://192.168.1.26:8001
-SERAPH_LOCAL_VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
+SERAPH_LOCAL_VLM_MODEL=unsloth/gemma-4-31B-it-qat-GGUF-schema-43cc1aeb
 ```
 
 ### Native Wrapper Fallback
@@ -115,14 +125,14 @@ The native wrapper script is a fallback for debugging Docker Desktop networking 
 ./scripts/run-local-wrapper.sh
 ```
 
-For gated model repos, set `HUGGING_FACE_HUB_TOKEN` in `.env` after accepting the model license.
+For gated model repos, authenticate on the GPU host with `hf auth login`.
 
 ## GPU Backend Examples
 
 ### vLLM
 
 ```bash
-vllm serve google/gemma-4-12b-it \
+vllm serve google/gemma-4-31b-it \
   --host 0.0.0.0 \
   --port 8000 \
   --dtype auto \
@@ -132,7 +142,8 @@ vllm serve google/gemma-4-12b-it \
 
 ### llama.cpp Server
 
-For Gemma 4 QAT on RTX 3090 Ti, use the CUDA llama.cpp build and QAT runner from this repo:
+For a native (non-Docker) Gemma 4 QAT process on RTX 3090 Ti, use the CUDA
+llama.cpp build and QAT runner from this repo:
 
 ```bash
 ./scripts/build-llama-cuda.sh
@@ -190,7 +201,7 @@ Seraph should call this service as a remote image analyzer:
 ```env
 SERAPH_SCREEN_ANALYSIS_PROVIDER=local-vlm
 SERAPH_LOCAL_VLM_BASE_URL=http://192.168.1.26:8001
-SERAPH_LOCAL_VLM_MODEL=unsloth/gemma-4-26B-A4B-it-qat-GGUF
+SERAPH_LOCAL_VLM_MODEL=unsloth/gemma-4-31B-it-qat-GGUF-schema-43cc1aeb
 ```
 
 This repo intentionally keeps the screenshot producer separate from analysis: screenshots are just files or uploaded image bytes.
@@ -282,7 +293,7 @@ Authenticated OpenAI-compatible streaming is supported with `stream: true`. The 
 curl -N http://192.168.1.26:8001/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $CHAT_PROXY_API_KEY" \
-  -d '{"model":"unsloth/gemma-4-26B-A4B-it-qat-GGUF","stream":true,"messages":[{"role":"user","content":"Hello"}],"max_tokens":64}'
+  -d '{"model":"unsloth/gemma-4-31B-it-qat-GGUF-schema-43cc1aeb","stream":true,"messages":[{"role":"user","content":"Hello"}],"max_tokens":64}'
 ```
 
 ### `POST /v1/analyze`
@@ -302,7 +313,7 @@ Response:
 ```json
 {
   "provider": "openai-compatible-vlm",
-  "model": "google/gemma-4-12b-it",
+  "model": "unsloth/gemma-4-31B-it-qat-GGUF-schema-43cc1aeb",
   "duration_ms": 1234,
   "analysis": {
     "activity": "coding",

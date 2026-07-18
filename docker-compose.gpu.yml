@@ -1,25 +1,40 @@
 services:
   gemma-vlm:
-    image: vllm/vllm-openai:latest
+    image: ${GPU_LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:8d1e8ddc42585632d7bd625c2285eba891ed2ed4428e9eda25ca71ce2f6cce27}
     command:
       - --model
-      - ${GPU_MODEL_ID:-google/gemma-4-12b-it}
+      - /models/${GPU_MODEL_FILE:-gemma-4-31B-it-qat-UD-Q4_K_XL.gguf}
+      - --mmproj
+      - /models/${GPU_MMPROJ_FILE:-mmproj-BF16.gguf}
       - --host
       - 0.0.0.0
       - --port
       - "8000"
-      - --dtype
-      - auto
-      - --max-model-len
-      - "8192"
-      - --gpu-memory-utilization
-      - "0.90"
-    environment:
-      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      - --ctx-size
+      - ${GPU_MODEL_CTX_SIZE:-32768}
+      - --n-gpu-layers
+      - ${GPU_MODEL_LAYERS:-999}
+      - --temp
+      - "1.0"
+      - --top-p
+      - "0.95"
+      - --top-k
+      - "64"
+      - --alias
+      - ${GPU_MODEL_ALIAS:-unsloth/gemma-4-31B-it-qat-GGUF-schema-43cc1aeb}
+      - --chat-template-kwargs
+      - '{"enable_thinking":false}'
     ports:
       - "8000:8000"
     volumes:
-      - hf-cache:/root/.cache/huggingface
+      - ${GPU_MODEL_DIR:-/home/pawel/models/gemma4-schema/31b-43cc1aeb31adf47ec06a854507ce552cd9862e6f}:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 180s
+    restart: unless-stopped
     deploy:
       resources:
         reservations:
@@ -35,7 +50,7 @@ services:
       PORT: ${PORT:-8088}
       VLM_BASE_URL: http://gemma-vlm:8000/v1
       VLM_API_KEY: ${VLM_API_KEY:-}
-      VLM_MODEL: ${GPU_MODEL_ID:-google/gemma-4-12b-it}
+      VLM_MODEL: ${GPU_MODEL_ALIAS:-unsloth/gemma-4-31B-it-qat-GGUF-schema-43cc1aeb}
       VLM_TIMEOUT_SECONDS: ${VLM_TIMEOUT_SECONDS:-120}
       VLM_MAX_TOKENS: ${VLM_MAX_TOKENS:-700}
       VLM_TEMPERATURE: ${VLM_TEMPERATURE:-0}
@@ -50,8 +65,6 @@ services:
     ports:
       - "8088:8088"
     depends_on:
-      - gemma-vlm
+      gemma-vlm:
+        condition: service_healthy
     restart: unless-stopped
-
-volumes:
-  hf-cache:
